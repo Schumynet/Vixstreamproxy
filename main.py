@@ -1,21 +1,34 @@
-from fastapi import FastAPI, Query
-from fastapi.responses import Response, StreamingResponse
-from utils import get_tmdb_data, get_vixsrc_manifest, clean_manifest
+from fastapi import FastAPI, Path, Query
+from fastapi.responses import HTMLResponse, Response
 import requests
+from bs4 import BeautifulSoup
 
 app = FastAPI()
 
-@app.get("/metadata")
-def metadata(query: str):
-    return get_tmdb_data(query)
+@app.get("/stream/movie/{tmdb_id}")
+def stream_movie(tmdb_id: int):
+    embed_url = f"https://vixsrc.to/movie/{tmdb_id}"
+    r = requests.get(embed_url)
+    soup = BeautifulSoup(r.text, "html.parser")
 
-@app.get("/watch")
-def watch(id: str):
-    manifest = get_vixsrc_manifest(id)
-    cleaned = clean_manifest(manifest)
-    return Response(content=cleaned, media_type="application/vnd.apple.mpegurl")
+    # Trova l'iframe video (escludi pubblicità)
+    iframe = soup.find("iframe", src=True)
+    if not iframe or "ad" in iframe["src"]:
+        return {"error": "Nessun stream valido trovato"}
 
-@app.get("/segment")
-def segment(url: str):
-    r = requests.get(url, stream=True)
-    return StreamingResponse(r.iter_content(1024), media_type="video/mp2t")
+    # Restituisci solo l'iframe pulito
+    clean_iframe = f'<iframe src="{iframe["src"]}" width="100%" height="600" allowfullscreen></iframe>'
+    return HTMLResponse(content=clean_iframe)
+
+@app.get("/stream/show/{tmdb_id}/{season}/{episode}")
+def stream_show(tmdb_id: int, season: int, episode: int):
+    embed_url = f"https://vixsrc.to/tv/{tmdb_id}/{season}/{episode}"
+    r = requests.get(embed_url)
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    iframe = soup.find("iframe", src=True)
+    if not iframe or "ad" in iframe["src"]:
+        return {"error": "Nessun stream valido trovato"}
+
+    clean_iframe = f'<iframe src="{iframe["src"]}" width="100%" height="600" allowfullscreen></iframe>'
+    return HTMLResponse(content=clean_iframe)
