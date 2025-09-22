@@ -1,14 +1,13 @@
 const express = require("express");
 const puppeteer = require("puppeteer");
 const axios = require("axios");
-const path = require("path");
 
 const app = express();
 
 // 🔑 Chiave TMDB
 const TMDB_KEY = "be78689897669066bef6906e501b0e10";
 
-// 🔍 Ricerca contenuti via TMDB
+// 🔍 Endpoint di ricerca
 app.get("/search", async (req, res) => {
   const query = req.query.q;
   if (!query) return res.status(400).json({ error: "Parametro 'q' mancante" });
@@ -36,26 +35,26 @@ app.get("/search", async (req, res) => {
 
     res.json({ results });
   } catch (err) {
-    console.error("🔥 Errore TMDB:", err.response?.data || err.message);
+    console.error("🔥 Errore TMDB:", err.message);
     res.status(500).json({ error: "Errore nella ricerca TMDB" });
   }
 });
 
-// 🎬 Flusso film
+// 🎬 Endpoint per film
 app.get("/hls/movie/:id", async (req, res) => {
   const id = req.params.id;
   const url = `https://vixsrc.to/movie/${id}`;
   await extractStream(url, res);
 });
 
-// 📺 Flusso serie TV
+// 📺 Endpoint per serie TV
 app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   const { id, season, episode } = req.params;
   const url = `https://vixsrc.to/tv/${id}/${season}/${episode}`;
   await extractStream(url, res);
 });
 
-// 🧠 Funzione comune per estrazione flusso via Puppeteer
+// 🧠 Funzione per estrarre il flusso video
 async function extractStream(url, res) {
   let hlsUrl = null;
 
@@ -79,6 +78,7 @@ async function extractStream(url, res) {
     await page.setRequestInterception(true);
     page.on("request", request => {
       const reqUrl = request.url();
+      console.log("🔎 Richiesta:", reqUrl);
       if (reqUrl.includes(".m3u8") && !hlsUrl) {
         hlsUrl = reqUrl;
         console.log("🎯 Flusso intercettato:", hlsUrl);
@@ -87,7 +87,10 @@ async function extractStream(url, res) {
     });
 
     await page.goto(url, { timeout: 60000 });
-    await new Promise(resolve => setTimeout(resolve, 5000)); // sostituisce waitForTimeout
+
+    // ⏳ Attendi che il player carichi
+    await new Promise(resolve => setTimeout(resolve, 8000));
+
     await browser.close();
 
     if (!hlsUrl) {
