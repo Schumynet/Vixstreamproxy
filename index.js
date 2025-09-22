@@ -19,6 +19,32 @@ const IMAGE_BASE   = "https://image.tmdb.org/t/p";
 // ─── JSON body parsing ────────────────────────────────────────────────────────
 app.use(express.json());
 
+
+// ─── LISTA GENERI STATICI ────────────────────────────────────────────────────
+const genres = [
+  { id: 28, name: "Azione", emoji: "🎬", slug: "azione", type: "movie" },
+  { id: 12, name: "Avventura", emoji: "🗺️", slug: "avventura", type: "movie" },
+  { id: 16, name: "Animazione", emoji: "🎨", slug: "animazione", type: "movie" },
+  { id: 35, name: "Commedia", emoji: "😂", slug: "commedia", type: "movie" },
+  { id: 80, name: "Crime", emoji: "🔍", slug: "crime", type: "movie" },
+  { id: 99, name: "Documentario", emoji: "📚", slug: "documentario", type: "movie" },
+  { id: 18, name: "Drammatico", emoji: "🎭", slug: "drammatico", type: "movie" },
+  { id: 10751, name: "Famiglia", emoji: "👨‍👩‍👧", slug: "famiglia", type: "movie" },
+  { id: 14, name: "Fantasy", emoji: "🧙‍♂️", slug: "fantasy", type: "movie" },
+  { id: 36, name: "Storia", emoji: "🏰", slug: "storia", type: "movie" },
+  { id: 27, name: "Horror", emoji: "👻", slug: "horror", type: "movie" },
+  { id: 10402, name: "Musica", emoji: "🎵", slug: "musica", type: "movie" },
+  { id: 9648, name: "Mistero", emoji: "🕵️‍♂️", slug: "mistero", type: "movie" },
+  { id: 10749, name: "Romantico", emoji: "❤️", slug: "romantico", type: "movie" },
+  { id: 878, name: "Fantascienza", emoji: "🚀", slug: "fantascienza", type: "movie" },
+  { id: 53, name: "Thriller", emoji: "😱", slug: "thriller", type: "movie" },
+  { id: 10752, name: "Guerra", emoji: "⚔️", slug: "guerra", type: "movie" },
+  { id: 37, name: "Western", emoji: "🤠", slug: "western", type: "movie" },
+  { id: 10770, name: "TV Movie", emoji: "📺", slug: "tv-movie", type: "movie" },
+  { id: 10759, name: "Azione & Avventura", emoji: "🧨", slug: "azione-avventura", type: "tv" },
+  { id: 10764, name: "Reality", emoji: "🎤", slug: "reality", type: "tv" }
+];
+
 // ─── CARICAMENTO CATALOGHI VixSrc ─────────────────────────────────────────────
 let availableMovies   = [];
 let availableTV       = [];
