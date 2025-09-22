@@ -5,5 +5,5 @@ services:
     region: frankfurt
     plan: free
     buildCommand: npm install && npx puppeteer browsers install chrome
-startCommand: node index.js
+    startCommand: node index.js
     autoDeploy: true
