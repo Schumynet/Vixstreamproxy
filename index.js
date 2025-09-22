@@ -125,6 +125,18 @@ app.get("/metadata/tv/:tvId/season/:season/episode/:episode", async (req, res) =
   }
 });
 
+// ─── ENDPOINT GENERI ─────────────────────────────────────────────────────────
+app.get("/genres", (req, res) => {
+  res.json(genres);
+});
+
+app.get("/genres/:id", (req, res) => {
+  const genreId = parseInt(req.params.id, 10);
+  const genre = genres.find(g => g.id === genreId);
+  if (!genre) return res.status(404).json({ error: "Genere non trovato" });
+  res.json(genre);
+});
+
 // ─── HELPER: proxy HLS ─────────────────────────────────────────────────────────
 function getProxyUrl(originalUrl) {
   return `https://vixstreamproxy.onrender.com/stream?url=${encodeURIComponent(originalUrl)}`;
