@@ -88,12 +88,29 @@ async function extractStream(url, res) {
 
     await page.goto(url, { timeout: 60000 });
 
-    // ⏳ Aspetta l'iframe
+    // ⏳ Aspetta l'iframe del player
     await page.waitForSelector("iframe");
     const frameHandle = await page.$("iframe");
     const frame = await frameHandle.contentFrame();
 
-    // 🖱️ Simula click sul bottone del player
+    // 🧹 Chiudi overlay pubblicitari se presenti
+    await frame.evaluate(() => {
+      const selectors = [
+        ".ad-overlay",
+        ".close-ad",
+        ".vix-close",
+        ".videoAdUiSkipButton",
+        "#dismiss-button"
+      ];
+      selectors.forEach(sel => {
+        const el = document.querySelector(sel);
+        if (el) el.click();
+      });
+    });
+
+    console.log("🧹 Overlay pubblicitari chiusi (se presenti)");
+
+    // 🖱️ Clicca sul bottone del player
     try {
       await frame.waitForSelector("button, .vjs-big-play-button", { timeout: 10000 });
       await frame.click("button, .vjs-big-play-button");
@@ -103,7 +120,7 @@ async function extractStream(url, res) {
     }
 
     // ⏳ Attendi che il flusso venga richiesto
-    await new Promise(resolve => setTimeout(resolve, 8000));
+    await new Promise(resolve => setTimeout(resolve, 10000));
 
     await browser.close();
 
