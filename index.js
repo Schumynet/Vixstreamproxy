@@ -13,6 +13,41 @@ const PORT = process.env.PORT || 10000;
 // ─── Middleware per JSON body parsing ────────────────────────────────────────
 app.use(express.json());
 
+// ─── Cataloghi VixSrc ────────────────────────────────────────────────────────
+let availableMovies   = [];
+let availableTV       = [];
+let availableEpisodes = [];
+
+async function loadCatalogs() {
+  try {
+    const [moviesRes, tvRes, episodesRes] = await Promise.all([
+      axios.get("https://vixsrc.to/api/list/movie?lang=it"),
+      axios.get("https://vixsrc.to/api/list/tv?lang=it"),
+      axios.get("https://vixsrc.to/api/list/episode?lang=it")
+    ]);
+    availableMovies   = moviesRes.data;
+    availableTV       = tvRes.data;
+    availableEpisodes = episodesRes.data;
+    console.log("✅ Cataloghi VixSrc caricati");
+  } catch (err) {
+    console.error("❌ Errore caricamento cataloghi VixSrc:", err.message);
+  }
+}
+
+// carica al boot e ricarica ogni 30 minuti
+loadCatalogs();
+setInterval(loadCatalogs, 30 * 60 * 1000);
+
+// ─── Endpoint per contenuti disponibili ──────────────────────────────────────
+app.get("/home/available", (req, res) => {
+  const combined = [
+    ...availableMovies.map(id => ({ tmdb_id: id, type: "movie" })),
+    ...availableTV.map(id       => ({ tmdb_id: id, type: "tv" })),
+    ...availableEpisodes.map(id => ({ tmdb_id: id, type: "episode" }))
+  ];
+  res.json(combined);
+});
+
 // 🔁 Funzione helper: costruisce l'URL del proxy
 function getProxyUrl(originalUrl) {
   return `https://vixstreamproxy.onrender.com/stream?url=${encodeURIComponent(originalUrl)}`;
@@ -201,7 +236,6 @@ app.get("/stream", async (req, res) => {
   }
 });
 
-
 // 🧠 Salvataggio progresso di riproduzione
 app.post("/progress/save", (req, res) => {
   const {
@@ -233,7 +267,6 @@ app.post("/progress/save", (req, res) => {
 
   res.json({ success: true });
 });
-
 
 // 🚀 Avvio server
 app.listen(PORT, () => {
