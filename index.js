@@ -237,6 +237,68 @@ app.get("/stream", async (req, res) => {
   }
 });
 
+app.get("/home/cards", async (req, res) => {
+  const items = [
+    ...availableMovies.map(id => ({ id, type: "movie" })),
+    ...availableTV.map(id => ({ id, type: "tv" })),
+    ...availableEpisodes.map(id => ({ id, type: "episode" }))
+  ];
+
+  const enriched = await Promise.all(items.map(async ({ id, type }) => {
+    try {
+      let data;
+      if (type === "movie") {
+        const res = await axios.get(`${TMDB_BASE}/movie/${id}`, {
+          params: { api_key: TMDB_API_KEY, language: "it-IT" }
+        });
+        data = {
+          title: res.data.title,
+          overview: res.data.overview,
+          poster: res.data.poster_path
+            ? `${IMAGE_BASE}/w300${res.data.poster_path}`
+            : null,
+          rating: res.data.vote_average,
+          hls: `/hls/movie/${id}`,
+          type
+        };
+      } else if (type === "tv") {
+        const res = await axios.get(`${TMDB_BASE}/tv/${id}`, {
+          params: { api_key: TMDB_API_KEY, language: "it-IT" }
+        });
+        data = {
+          title: res.data.name,
+          overview: res.data.overview,
+          poster: res.data.poster_path
+            ? `${IMAGE_BASE}/w300${res.data.poster_path}`
+            : null,
+          rating: res.data.vote_average,
+          hls: `/hls/show/${id}/1/1`, // default prima stagione/episodio
+          type
+        };
+      } else {
+        const res = await axios.get(`${TMDB_BASE}/tv/${id.tvId}/season/${id.season}/episode/${id.episode}`, {
+          params: { api_key: TMDB_API_KEY, language: "it-IT" }
+        });
+        data = {
+          title: res.data.name,
+          overview: res.data.overview,
+          poster: res.data.still_path
+            ? `${IMAGE_BASE}/w300${res.data.still_path}`
+            : null,
+          rating: res.data.vote_average,
+          hls: `/hls/show/${id.tvId}/${id.season}/${id.episode}`,
+          type
+        };
+      }
+      return data;
+    } catch {
+      return null;
+    }
+  }));
+
+  res.json(enriched.filter(Boolean));
+});
+
 // ─── Avvio server ────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`🎬 VixStream proxy in ascolto su http://0.0.0.0:${PORT}`);
