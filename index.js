@@ -7,7 +7,7 @@ const app = express();
 // 🔑 Chiave TMDB
 const TMDB_KEY = "be78689897669066bef6906e501b0e10";
 
-// 🔍 Ricerca contenuti via TMDB
+// 🔍 Ricerca contenuti
 app.get("/search", async (req, res) => {
   const query = req.query.q;
   if (!query) return res.status(400).json({ error: "Parametro 'q' mancante" });
@@ -40,23 +40,24 @@ app.get("/search", async (req, res) => {
   }
 });
 
-// 🎬 Flusso film
+// 🎬 Endpoint per generare m3u8 da film
 app.get("/hls/movie/:id", async (req, res) => {
   const id = req.params.id;
   const url = `https://vixsrc.to/movie/${id}`;
-  await extractStream(url, res);
+  await generateM3U8(url, res);
 });
 
-// 📺 Flusso serie TV
+// 📺 Endpoint per generare m3u8 da serie TV
 app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   const { id, season, episode } = req.params;
   const url = `https://vixsrc.to/tv/${id}/${season}/${episode}`;
-  await extractStream(url, res);
+  await generateM3U8(url, res);
 });
 
-// 🧠 Funzione per estrarre il flusso video
-async function extractStream(url, res) {
-  let hlsUrl = null;
+// 🧠 Funzione per generare playlist m3u8
+async function generateM3U8(url, res) {
+  const tsSegments = [];
+  let encryptionKey = null;
 
   try {
     console.log("🌐 Navigazione verso:", url);
@@ -78,22 +79,27 @@ async function extractStream(url, res) {
     await page.setRequestInterception(true);
     page.on("request", request => {
       const reqUrl = request.url();
-      console.log("🔎 Richiesta:", reqUrl);
-      if (reqUrl.includes(".m3u8") && !hlsUrl) {
-        hlsUrl = reqUrl;
-        console.log("🎯 Flusso intercettato:", hlsUrl);
+
+      if (reqUrl.endsWith(".ts")) {
+        tsSegments.push(reqUrl);
+        console.log("🎬 Segmento:", reqUrl);
       }
+
+      if (reqUrl.includes("enc.key") && !encryptionKey) {
+        encryptionKey = reqUrl;
+        console.log("🔐 Chiave:", encryptionKey);
+      }
+
       request.continue();
     });
 
     await page.goto(url, { timeout: 60000 });
 
-    // ⏳ Aspetta l'iframe del player
+    // ⏳ Aspetta iframe e clicca sul player
     await page.waitForSelector("iframe");
     const frameHandle = await page.$("iframe");
     const frame = await frameHandle.contentFrame();
 
-    // 🧹 Chiudi overlay pubblicitari se presenti
     await frame.evaluate(() => {
       const selectors = [
         ".ad-overlay",
@@ -108,28 +114,36 @@ async function extractStream(url, res) {
       });
     });
 
-    console.log("🧹 Overlay pubblicitari chiusi (se presenti)");
-
-    // 🖱️ Clicca sul bottone del player
     try {
       await frame.waitForSelector("button, .vjs-big-play-button", { timeout: 10000 });
       await frame.click("button, .vjs-big-play-button");
       console.log("🖱️ Click sul player eseguito");
-    } catch (clickErr) {
-      console.warn("⚠️ Nessun bottone cliccabile trovato:", clickErr.message);
+    } catch (err) {
+      console.warn("⚠️ Nessun bottone cliccabile trovato");
     }
 
-    // ⏳ Attendi che il flusso venga richiesto
     await new Promise(resolve => setTimeout(resolve, 10000));
-
     await browser.close();
 
-    if (!hlsUrl) {
-      console.warn("⚠️ Nessun flusso trovato per:", url);
+    if (tsSegments.length === 0) {
+      console.warn("⚠️ Nessun segmento trovato");
       return res.status(404).json({ error: "Nessun flusso trovato" });
     }
 
-    res.json({ video: [{ label: "Auto", url: hlsUrl }] });
+    // 🧩 Costruisci la playlist m3u8
+    let m3u8 = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n";
+
+    if (encryptionKey) {
+      m3u8 += `#EXT-X-KEY:METHOD=AES-128,URI="${encryptionKey}"\n`;
+    }
+
+    tsSegments.forEach(url => {
+      m3u8 += "#EXTINF:10.0,\n" + url + "\n";
+    });
+
+    m3u8 += "#EXT-X-ENDLIST";
+
+    res.type("application/vnd.apple.mpegurl").send(m3u8);
   } catch (err) {
     console.error("🔥 Errore Puppeteer:", err.message);
     res.status(500).json({ error: "Errore interno", debug: err.message });
