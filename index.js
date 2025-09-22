@@ -6,7 +6,6 @@ const fetch     = require("node-fetch");
 const http      = require("http");
 const https     = require("https");
 const puppeteer = require("puppeteer");
-const path      = require("path");
 
 const app  = express();
 const PORT = process.env.PORT || 10000;
@@ -16,34 +15,45 @@ const TMDB_API_KEY = process.env.TMDB_API_KEY || "be78689897669066bef6906e501b0e
 const TMDB_BASE    = "https://api.themoviedb.org/3";
 const IMAGE_BASE   = "https://image.tmdb.org/t/p";
 
-// ─── JSON body parsing ────────────────────────────────────────────────────────
+// ─── JSON BODY PARSING ────────────────────────────────────────────────────────
 app.use(express.json());
-
 
 // ─── LISTA GENERI STATICI ────────────────────────────────────────────────────
 const genres = [
-  { id: 28, name: "Azione", emoji: "🎬", slug: "azione", type: "movie" },
-  { id: 12, name: "Avventura", emoji: "🗺️", slug: "avventura", type: "movie" },
-  { id: 16, name: "Animazione", emoji: "🎨", slug: "animazione", type: "movie" },
-  { id: 35, name: "Commedia", emoji: "😂", slug: "commedia", type: "movie" },
-  { id: 80, name: "Crime", emoji: "🔍", slug: "crime", type: "movie" },
-  { id: 99, name: "Documentario", emoji: "📚", slug: "documentario", type: "movie" },
-  { id: 18, name: "Drammatico", emoji: "🎭", slug: "drammatico", type: "movie" },
-  { id: 10751, name: "Famiglia", emoji: "👨‍👩‍👧", slug: "famiglia", type: "movie" },
-  { id: 14, name: "Fantasy", emoji: "🧙‍♂️", slug: "fantasy", type: "movie" },
-  { id: 36, name: "Storia", emoji: "🏰", slug: "storia", type: "movie" },
-  { id: 27, name: "Horror", emoji: "👻", slug: "horror", type: "movie" },
-  { id: 10402, name: "Musica", emoji: "🎵", slug: "musica", type: "movie" },
-  { id: 9648, name: "Mistero", emoji: "🕵️‍♂️", slug: "mistero", type: "movie" },
-  { id: 10749, name: "Romantico", emoji: "❤️", slug: "romantico", type: "movie" },
-  { id: 878, name: "Fantascienza", emoji: "🚀", slug: "fantascienza", type: "movie" },
-  { id: 53, name: "Thriller", emoji: "😱", slug: "thriller", type: "movie" },
-  { id: 10752, name: "Guerra", emoji: "⚔️", slug: "guerra", type: "movie" },
-  { id: 37, name: "Western", emoji: "🤠", slug: "western", type: "movie" },
-  { id: 10770, name: "TV Movie", emoji: "📺", slug: "tv-movie", type: "movie" },
-  { id: 10759, name: "Azione & Avventura", emoji: "🧨", slug: "azione-avventura", type: "tv" },
-  { id: 10764, name: "Reality", emoji: "🎤", slug: "reality", type: "tv" }
+  { id: 28,    name: "Azione",               emoji: "🎬",   slug: "azione",             type: "movie" },
+  { id: 12,    name: "Avventura",            emoji: "🗺️",  slug: "avventura",          type: "movie" },
+  { id: 16,    name: "Animazione",           emoji: "🎨",   slug: "animazione",         type: "movie" },
+  { id: 35,    name: "Commedia",             emoji: "😂",   slug: "commedia",           type: "movie" },
+  { id: 80,    name: "Crime",                emoji: "🔍",   slug: "crime",              type: "movie" },
+  { id: 99,    name: "Documentario",         emoji: "📚",   slug: "documentario",       type: "movie" },
+  { id: 18,    name: "Drammatico",           emoji: "🎭",   slug: "drammatico",         type: "movie" },
+  { id: 10751,name: "Famiglia",             emoji: "👨‍👩‍👧",slug: "famiglia",           type: "movie" },
+  { id: 14,    name: "Fantasy",              emoji: "🧙‍♂️", slug: "fantasy",            type: "movie" },
+  { id: 36,    name: "Storia",               emoji: "🏰",   slug: "storia",             type: "movie" },
+  { id: 27,    name: "Horror",               emoji: "👻",   slug: "horror",             type: "movie" },
+  { id: 10402, name: "Musica",               emoji: "🎵",   slug: "musica",             type: "movie" },
+  { id: 9648,  name: "Mistero",              emoji: "🕵️‍♂️",slug: "mistero",            type: "movie" },
+  { id: 10749, name: "Romantico",            emoji: "❤️",   slug: "romantico",          type: "movie" },
+  { id: 878,   name: "Fantascienza",         emoji: "🚀",   slug: "fantascienza",       type: "movie" },
+  { id: 53,    name: "Thriller",             emoji: "😱",   slug: "thriller",           type: "movie" },
+  { id: 10752, name: "Guerra",               emoji: "⚔️",   slug: "guerra",             type: "movie" },
+  { id: 37,    name: "Western",              emoji: "🤠",   slug: "western",            type: "movie" },
+  { id: 10770, name: "TV Movie",             emoji: "📺",   slug: "tv-movie",           type: "movie" },
+  { id: 10759, name: "Azione & Avventura",   emoji: "🧨",   slug: "azione-avventura",   type: "tv"    },
+  { id: 10764, name: "Reality",              emoji: "🎤",   slug: "reality",            type: "tv"    }
 ];
+
+// ─── ENDPOINT GENERI ─────────────────────────────────────────────────────────
+app.get("/genres", (req, res) => {
+  res.json(genres);
+});
+
+app.get("/genres/:id", (req, res) => {
+  const genreId = parseInt(req.params.id, 10);
+  const genre = genres.find(g => g.id === genreId);
+  if (!genre) return res.status(404).json({ error: "Genere non trovato" });
+  res.json(genre);
+});
 
 // ─── CARICAMENTO CATALOGHI VixSrc ─────────────────────────────────────────────
 let availableMovies   = [];
@@ -68,7 +78,7 @@ async function loadCatalogs() {
 loadCatalogs();
 setInterval(loadCatalogs, 30 * 60 * 1000);
 
-// ─── ENDPOINT: contenuti disponibili ─────────────────────────────────────────
+// ─── ENDPOINT DISPONIBILITÀ HOME ──────────────────────────────────────────────
 app.get("/home/available", (req, res) => {
   const combined = [
     ...availableMovies.map(id   => ({ tmdb_id: id, type: "movie"  })),
@@ -79,7 +89,6 @@ app.get("/home/available", (req, res) => {
 });
 
 // ─── METADATA & POSTER ────────────────────────────────────────────────────────
-// movie details + posterUrl
 app.get("/metadata/movie/:id", async (req, res) => {
   try {
     const { data } = await axios.get(`${TMDB_BASE}/movie/${req.params.id}`, {
@@ -94,7 +103,6 @@ app.get("/metadata/movie/:id", async (req, res) => {
   }
 });
 
-// tv details + posterUrl
 app.get("/metadata/tv/:id", async (req, res) => {
   try {
     const { data } = await axios.get(`${TMDB_BASE}/tv/${req.params.id}`, {
@@ -109,7 +117,6 @@ app.get("/metadata/tv/:id", async (req, res) => {
   }
 });
 
-// episode details + stillUrl
 app.get("/metadata/tv/:tvId/season/:season/episode/:episode", async (req, res) => {
   try {
     const { data } = await axios.get(
@@ -125,19 +132,7 @@ app.get("/metadata/tv/:tvId/season/:season/episode/:episode", async (req, res) =
   }
 });
 
-// ─── ENDPOINT GENERI ─────────────────────────────────────────────────────────
-app.get("/genres", (req, res) => {
-  res.json(genres);
-});
-
-app.get("/genres/:id", (req, res) => {
-  const genreId = parseInt(req.params.id, 10);
-  const genre = genres.find(g => g.id === genreId);
-  if (!genre) return res.status(404).json({ error: "Genere non trovato" });
-  res.json(genre);
-});
-
-// ─── HELPER: proxy HLS ─────────────────────────────────────────────────────────
+// ─── HELPER PROXY HLS ─────────────────────────────────────────────────────────
 function getProxyUrl(originalUrl) {
   return `https://vixstreamproxy.onrender.com/stream?url=${encodeURIComponent(originalUrl)}`;
 }
@@ -168,7 +163,7 @@ async function extractWithPuppeteer(url) {
   let pl = null;
   const browser = await puppeteer.launch({
     headless: true,
-    args: ["--no-sandbox","--disable-setuid-sandbox"]
+    args: ["--no-sandbox", "--disable-setuid-sandbox"]
   });
   try {
     const page = await browser.newPage();
@@ -204,21 +199,7 @@ app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   res.json({ url: getProxyUrl(pl) });
 });
 
-// ─── ENDPOINT GENERI ─────────────────────────────────────────────────────────
-const genres = require(path.join(__dirname, "data/genres.json"));
-
-app.get("/genres", (req, res) => {
-  res.json(genres);
-});
-
-app.get("/genres/:id", (req, res) => {
-  const genreId = parseInt(req.params.id, 10);
-  const genre = genres.find(g => g.id === genreId);
-  if (!genre) return res.status(404).json({ error: "Genere non trovato" });
-  res.json(genre);
-});
-
-// ─── Proxy universale playlist/segmenti ──────────────────────────────────────
+// ─── PROXY UNIVERSALE PLAYLIST/SEGMENTI ──────────────────────────────────────
 app.get("/stream", async (req, res) => {
   const target = req.query.url;
   if (!target) return res.status(400).send("Missing url");
@@ -232,11 +213,11 @@ app.get("/stream", async (req, res) => {
   if (isM3U8) {
     try {
       const pr = await fetch(target, {
-        headers: { "Referer":"https://vixsrc.to", "User-Agent":"Mozilla/5.0" },
+        headers: { "Referer": "https://vixsrc.to", "User-Agent": "Mozilla/5.0" },
         timeout: 10000
       });
       let txt = await pr.text();
-      const base = target.split("/").slice(0,-1).join("/");
+      const base = target.split("/").slice(0, -1).join("/");
       txt = txt
         .replace(/URI="([^"]+)"/g, (_, u) => {
           const abs = u.startsWith("http")
@@ -247,25 +228,25 @@ app.get("/stream", async (req, res) => {
           return `URI="${getProxyUrl(abs)}"`;
         })
         .replace(/^([^#\r\n].+\.(ts|key|vtt))$/gm, m => getProxyUrl(`${base}/${m}`));
-      res.setHeader("Content-Type","application/vnd.apple.mpegurl");
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
       res.send(txt);
       done = true;
     } catch (err) {
       console.error("Errore proxy m3u8:", err.message);
-      sendErr(500,"Errore proxy m3u8");
+      sendErr(500, "Errore proxy m3u8");
     }
   } else {
     try {
       const uObj = new URL(target);
-      const client = uObj.protocol==="https:" ? https : http;
+      const client = uObj.protocol === "https:" ? https : http;
       const proxyReq = client.get(target, {
         headers: {
-          "Referer":"https://vixsrc.to",
-          "User-Agent":"Mozilla/5.0",
-          "Accept":"*/*",
-          "Connection":"keep-alive"
+          "Referer": "https://vixsrc.to",
+          "User-Agent": "Mozilla/5.0",
+          "Accept": "*/*",
+          "Connection": "keep-alive"
         },
-        timeout:10000
+        timeout: 10000
       }, proxyRes => {
         res.writeHead(proxyRes.statusCode, proxyRes.headers);
         proxyRes.pipe(res);
@@ -273,11 +254,11 @@ app.get("/stream", async (req, res) => {
       });
       proxyReq.on("timeout", () => {
         proxyReq.destroy();
-        sendErr(504,"Timeout");
+        sendErr(504, "Timeout");
       });
       proxyReq.on("error", err => {
         console.error("Errore proxy media:", err.message);
-        sendErr(500,"Errore proxy media");
+        sendErr(500, "Errore proxy media");
       });
       req.on("close", () => {
         proxyReq.destroy();
@@ -285,7 +266,7 @@ app.get("/stream", async (req, res) => {
       });
     } catch (err) {
       console.error("URL invalido:", err.message);
-      sendErr(400,"URL invalido");
+      sendErr(400, "URL invalido");
     }
   }
 });
