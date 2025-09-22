@@ -1,21 +1,19 @@
 const express = require("express");
+const axios = require("axios");
 const fetch = require("node-fetch");
 const http = require("http");
 const https = require("https");
-const axios = require("axios");
+const puppeteer = require("puppeteer");
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// 🔑 Chiave TMDB
-const TMDB_API_KEY = "be78689897669066bef6906e501b0e10";
-
-// 🔁 Funzione per costruire URL proxy
+// 🔁 URL proxy
 function getProxyUrl(originalUrl) {
   return `https://vixstreamproxy.onrender.com/stream?url=${encodeURIComponent(originalUrl)}`;
 }
 
-// 🔍 Estrazione playlist da VixSRC via regex
+// 🔍 Regex primaria per estrazione playlist
 async function vixsrcPlaylist(tmdbId, seasonNumber, episodeNumber) {
   const targetUrl = seasonNumber !== undefined
     ? `https://vixsrc.to/tv/${tmdbId}/${seasonNumber}/${episodeNumber}/?lang=it`
@@ -33,7 +31,7 @@ async function vixsrcPlaylist(tmdbId, seasonNumber, episodeNumber) {
     "token': '(.+)',\\n[ ]+'expires': '(.+)',\\n.+\\n.+\\n.+url: '(.+)',\\n[ ]+}\\n[ ]+window.canPlayFHD = (false|true)"
   ).exec(text);
 
-  if (!playlistData) throw new Error("Regex match fallito");
+  if (!playlistData) return null;
 
   const token = playlistData[1];
   const expires = playlistData[2];
@@ -49,31 +47,63 @@ async function vixsrcPlaylist(tmdbId, seasonNumber, episodeNumber) {
   return playlistUrl.toString();
 }
 
-// 🎬 Endpoint per film
+// 🧠 Fallback Puppeteer per estrazione flusso
+async function extractWithPuppeteer(url) {
+  let playlistUrl = null;
+
+  const browser = await puppeteer.launch({
+    headless: true,
+    executablePath: puppeteer.executablePath(),
+    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  });
+
+  const page = await browser.newPage();
+
+  await page.setRequestInterception(true);
+  page.on("request", request => {
+    const reqUrl = request.url();
+    if (reqUrl.includes("playlist") && reqUrl.includes("rendition=") && !playlistUrl) {
+      playlistUrl = reqUrl;
+    }
+    request.continue();
+  });
+
+  await page.goto(url, { timeout: 60000 });
+
+  try {
+    await page.waitForSelector("iframe", { timeout: 10000 });
+    const frameHandle = await page.$("iframe");
+    const frame = await frameHandle.contentFrame();
+    await frame.click("body");
+  } catch (err) {
+    console.warn("⚠️ Click Puppeteer fallito:", err.message);
+  }
+
+  await new Promise(resolve => setTimeout(resolve, 10000));
+  await browser.close();
+
+  return playlistUrl;
+}
+
+// 🎬 Endpoint film
 app.get("/hls/movie/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const playlistUrl = await vixsrcPlaylist(id);
-    res.json({ url: getProxyUrl(playlistUrl) });
-  } catch (err) {
-    console.error("❌ Errore proxy movie:", err.message);
-    res.status(500).json({ error: "Errore estrazione film" });
-  }
+  const { id } = req.params;
+  let playlistUrl = await vixsrcPlaylist(id);
+  if (!playlistUrl) playlistUrl = await extractWithPuppeteer(`https://vixsrc.to/movie/${id}`);
+  if (!playlistUrl) return res.status(404).json({ error: "Flusso non trovato" });
+  res.json({ url: getProxyUrl(playlistUrl) });
 });
 
-// 📺 Endpoint per serie TV
+// 📺 Endpoint serie TV
 app.get("/hls/show/:id/:season/:episode", async (req, res) => {
-  try {
-    const { id, season, episode } = req.params;
-    const playlistUrl = await vixsrcPlaylist(id, season, episode);
-    res.json({ url: getProxyUrl(playlistUrl) });
-  } catch (err) {
-    console.error("❌ Errore proxy series:", err.message);
-    res.status(500).json({ error: "Errore estrazione episodio" });
-  }
+  const { id, season, episode } = req.params;
+  let playlistUrl = await vixsrcPlaylist(id, season, episode);
+  if (!playlistUrl) playlistUrl = await extractWithPuppeteer(`https://vixsrc.to/tv/${id}/${season}/${episode}`);
+  if (!playlistUrl) return res.status(404).json({ error: "Flusso non trovato" });
+  res.json({ url: getProxyUrl(playlistUrl) });
 });
 
-// 🔁 Endpoint universale per servire flussi HLS
+// 🔁 Proxy universale
 app.get("/stream", async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).send("Missing url");
