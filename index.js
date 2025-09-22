@@ -95,11 +95,12 @@ async function generateM3U8(url, res) {
 
     await page.goto(url, { timeout: 60000 });
 
-    // ⏳ Aspetta iframe e clicca sul player
+    // ⏳ Aspetta iframe e interagisci
     await page.waitForSelector("iframe");
     const frameHandle = await page.$("iframe");
     const frame = await frameHandle.contentFrame();
 
+    // 🧹 Chiudi overlay pubblicitari
     await frame.evaluate(() => {
       const selectors = [
         ".ad-overlay",
@@ -114,14 +115,17 @@ async function generateM3U8(url, res) {
       });
     });
 
+    console.log("🧹 Overlay pubblicitari chiusi (se presenti)");
+
+    // 🖱️ Simula click al centro del player
     try {
-      await frame.waitForSelector("button, .vjs-big-play-button", { timeout: 10000 });
-      await frame.click("button, .vjs-big-play-button");
-      console.log("🖱️ Click sul player eseguito");
+      await frame.mouse.click(400, 300);
+      console.log("🖱️ Click simulato al centro del player");
     } catch (err) {
-      console.warn("⚠️ Nessun bottone cliccabile trovato");
+      console.warn("⚠️ Click simulato fallito:", err.message);
     }
 
+    // ⏳ Attendi che il flusso venga richiesto
     await new Promise(resolve => setTimeout(resolve, 10000));
     await browser.close();
 
