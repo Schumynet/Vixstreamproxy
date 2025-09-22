@@ -1,14 +1,21 @@
 {
-  "name": "fabiostream-proxy",
+  "name": "vixstream-proxy",
   "version": "1.0.0",
+  "description": "Proxy HLS per VixSRC con supporto a playlist, segmenti, chiavi e sottotitoli",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-  "express": "^4.18.2",
-  "axios": "^1.6.7",
-  "node-fetch": "^2.6.7",
-  "puppeteer": "^24.1.1"
-}
+    "axios": "^1.6.7",
+    "express": "^4.18.2",
+    "node-fetch": "^2.6.7",
+    "puppeteer": "^24.1.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [],
+  "author": "vixstream-proxy",
+  "license": "MIT"
 }
