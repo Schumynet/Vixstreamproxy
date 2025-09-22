@@ -1,6 +1,8 @@
 const express = require("express");
 const puppeteer = require("puppeteer");
 const axios = require("axios");
+const path = require("path");
+
 const app = express();
 
 // 🔑 Chiave TMDB
@@ -85,7 +87,7 @@ async function extractStream(url, res) {
     });
 
     await page.goto(url, { timeout: 60000 });
-    await page.waitForTimeout(5000);
+    await new Promise(resolve => setTimeout(resolve, 5000)); // sostituisce waitForTimeout
     await browser.close();
 
     if (!hlsUrl) {
