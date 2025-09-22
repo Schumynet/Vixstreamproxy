@@ -1,13 +1,9 @@
 services:
   - type: web
-    name: fabiostream-backend
-    env: python
+    name: fabiostream-proxy
+    env: node
     region: frankfurt
     plan: free
-    buildCommand: |
-      pip install -r requirements.txt
-      playwright install
-    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
-    runtime: python
-    pythonVersion: 3.11
+    buildCommand: npm install
+    startCommand: node index.js
     autoDeploy: true
