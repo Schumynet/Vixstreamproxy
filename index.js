@@ -9,10 +9,16 @@ app.get("/hls/movie/:id", async (req, res) => {
   try {
     const browser = await puppeteer.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-software-rasterizer"
+      ]
     });
-    const page = await browser.newPage();
 
+    const page = await browser.newPage();
     let hlsUrl = null;
 
     await page.setRequestInterception(true);
@@ -39,6 +45,7 @@ app.get("/hls/movie/:id", async (req, res) => {
   }
 });
 
-app.listen(10000, () => {
-  console.log("FabioStream proxy attivo su porta 10000");
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log(`FabioStream proxy attivo su porta ${PORT}`);
 });
