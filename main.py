@@ -1,15 +1,12 @@
-# backend/main.py
-
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.sync_api import sync_playwright
 import requests
-import os
 
 app = FastAPI()
 
-# 🔓 CORS per frontend
+# 🔓 Abilita CORS per il frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,7 +19,7 @@ TMDB_API_KEY = "be78689897669066bef6906e501b0e10"
 # 🔍 Ricerca TMDB in italiano
 @app.get("/search")
 def search_tmdb(query: str):
-    url = f"https://api.themoviedb.org/3/search/multi"
+    url = "https://api.themoviedb.org/3/search/multi"
     params = {
         "api_key": TMDB_API_KEY,
         "query": query,
@@ -46,17 +43,13 @@ def search_tmdb(query: str):
 
     return results
 
-# 🎬 Estrazione flusso HLS da VixSrc
+# 🎬 Estrazione flusso HLS per film
 @app.get("/hls/movie/{tmdb_id}")
 def get_movie_stream(tmdb_id: int):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
-        # Vai alla pagina VixSrc
-        page.goto(f"https://vixsrc.to/movie/{tmdb_id}", timeout=60000)
-        page.wait_for_timeout(3000)
-
         hls_urls = []
 
         def handle_request(route):
@@ -66,7 +59,7 @@ def get_movie_stream(tmdb_id: int):
             route.continue_()
 
         page.route("**/*", handle_request)
-        page.reload()
+        page.goto(f"https://vixsrc.to/movie/{tmdb_id}", timeout=60000)
         page.wait_for_timeout(5000)
 
         browser.close()
@@ -74,18 +67,15 @@ def get_movie_stream(tmdb_id: int):
         if not hls_urls:
             return JSONResponse(content={"error": "Nessun flusso trovato"}, status_code=404)
 
-        return {"video": [{"label": "Auto", "url": hls_urls[0]}]}
+        return { "video": [{ "label": "Auto", "url": hls_urls[0] }] }
 
-# 📺 Serie TV (default episodio 1x01)
+# 📺 Estrazione flusso HLS per serie TV
 @app.get("/hls/show/{tmdb_id}/{season}/{episode}")
 def get_show_stream(tmdb_id: int, season: int, episode: int):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
-        page.goto(f"https://vixsrc.to/show/{tmdb_id}/{season}/{episode}", timeout=60000)
-        page.wait_for_timeout(3000)
-
         hls_urls = []
 
         def handle_request(route):
@@ -95,7 +85,7 @@ def get_show_stream(tmdb_id: int, season: int, episode: int):
             route.continue_()
 
         page.route("**/*", handle_request)
-        page.reload()
+        page.goto(f"https://vixsrc.to/show/{tmdb_id}/{season}/{episode}", timeout=60000)
         page.wait_for_timeout(5000)
 
         browser.close()
@@ -103,4 +93,4 @@ def get_show_stream(tmdb_id: int, season: int, episode: int):
         if not hls_urls:
             return JSONResponse(content={"error": "Nessun flusso trovato"}, status_code=404)
 
-        return {"video": [{"label": "Auto", "url": hls_urls[0]}]}
+        return { "video": [{ "label": "Auto", "url": hls_urls[0] }] }
