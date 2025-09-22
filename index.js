@@ -62,6 +62,7 @@ async function extractStream(url, res) {
 
     const browser = await puppeteer.launch({
       headless: true,
+      executablePath: puppeteer.executablePath(),
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -101,6 +102,6 @@ async function extractStream(url, res) {
 
 // 🚀 Avvio server
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ VixStream attivo su porta ${PORT}`);
 });
