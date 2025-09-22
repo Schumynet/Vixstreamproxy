@@ -6,6 +6,7 @@ const fetch     = require("node-fetch");
 const http      = require("http");
 const https     = require("https");
 const puppeteer = require("puppeteer");
+const path      = require("path");
 
 const app  = express();
 const PORT = process.env.PORT || 10000;
@@ -18,7 +19,7 @@ const IMAGE_BASE   = "https://image.tmdb.org/t/p";
 // ─── JSON body parsing ────────────────────────────────────────────────────────
 app.use(express.json());
 
-// ─── Cataloghi VixSrc ────────────────────────────────────────────────────────
+// ─── CARICAMENTO CATALOGHI VixSrc ─────────────────────────────────────────────
 let availableMovies   = [];
 let availableTV       = [];
 let availableEpisodes = [];
@@ -41,7 +42,7 @@ async function loadCatalogs() {
 loadCatalogs();
 setInterval(loadCatalogs, 30 * 60 * 1000);
 
-// ─── Endpoint contenuti disponibili ──────────────────────────────────────────
+// ─── ENDPOINT: contenuti disponibili ─────────────────────────────────────────
 app.get("/home/available", (req, res) => {
   const combined = [
     ...availableMovies.map(id   => ({ tmdb_id: id, type: "movie"  })),
@@ -51,7 +52,7 @@ app.get("/home/available", (req, res) => {
   res.json(combined);
 });
 
-// ─── METADATA & POSTER ───────────────────────────────────────────────────────
+// ─── METADATA & POSTER ────────────────────────────────────────────────────────
 // movie details + posterUrl
 app.get("/metadata/movie/:id", async (req, res) => {
   try {
@@ -62,7 +63,7 @@ app.get("/metadata/movie/:id", async (req, res) => {
       ? `${IMAGE_BASE}/w300${data.poster_path}`
       : null;
     res.json({ ...data, posterUrl });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Impossibile recuperare metadata film" });
   }
 });
@@ -77,7 +78,7 @@ app.get("/metadata/tv/:id", async (req, res) => {
       ? `${IMAGE_BASE}/w300${data.poster_path}`
       : null;
     res.json({ ...data, posterUrl });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Impossibile recuperare metadata serie" });
   }
 });
@@ -93,17 +94,17 @@ app.get("/metadata/tv/:tvId/season/:season/episode/:episode", async (req, res) =
       ? `${IMAGE_BASE}/w300${data.still_path}`
       : null;
     res.json({ ...data, stillUrl });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Impossibile recuperare metadata episodio" });
   }
 });
 
-// ─── Funzione helper proxy HLS ───────────────────────────────────────────────
+// ─── HELPER: proxy HLS ─────────────────────────────────────────────────────────
 function getProxyUrl(originalUrl) {
   return `https://vixstreamproxy.onrender.com/stream?url=${encodeURIComponent(originalUrl)}`;
 }
 
-// ─── Estrazione playlist VixSrc ──────────────────────────────────────────────
+// ─── ESTRAZIONE PLAYLIST VixSrc ───────────────────────────────────────────────
 async function vixsrcPlaylist(tmdbId, season, episode) {
   const url = episode != null
     ? `https://vixsrc.to/tv/${tmdbId}/${season}/${episode}/?lang=it`
@@ -124,7 +125,7 @@ async function vixsrcPlaylist(tmdbId, season, episode) {
   return playlist.toString();
 }
 
-// ─── Fallback Puppeteer ───────────────────────────────────────────────────────
+// ─── FALLBACK PUPPETEER ───────────────────────────────────────────────────────
 async function extractWithPuppeteer(url) {
   let pl = null;
   const browser = await puppeteer.launch({
@@ -148,7 +149,7 @@ async function extractWithPuppeteer(url) {
   return pl;
 }
 
-// ─── HLS per film ─────────────────────────────────────────────────────────────
+// ─── HLS PER FILM ────────────────────────────────────────────────────────────
 app.get("/hls/movie/:id", async (req, res) => {
   let pl = await vixsrcPlaylist(req.params.id);
   if (!pl) pl = await extractWithPuppeteer(`https://vixsrc.to/movie/${req.params.id}`);
@@ -156,13 +157,27 @@ app.get("/hls/movie/:id", async (req, res) => {
   res.json({ url: getProxyUrl(pl) });
 });
 
-// ─── HLS per serie TV ─────────────────────────────────────────────────────────
+// ─── HLS PER SERIE TV ────────────────────────────────────────────────────────
 app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   const { id, season, episode } = req.params;
   let pl = await vixsrcPlaylist(id, season, episode);
   if (!pl) pl = await extractWithPuppeteer(`https://vixsrc.to/tv/${id}/${season}/${episode}`);
   if (!pl) return res.status(404).json({ error: "Flusso non trovato" });
   res.json({ url: getProxyUrl(pl) });
+});
+
+// ─── ENDPOINT GENERI ─────────────────────────────────────────────────────────
+const genres = require(path.join(__dirname, "data/genres.json"));
+
+app.get("/genres", (req, res) => {
+  res.json(genres);
+});
+
+app.get("/genres/:id", (req, res) => {
+  const genreId = parseInt(req.params.id, 10);
+  const genre = genres.find(g => g.id === genreId);
+  if (!genre) return res.status(404).json({ error: "Genere non trovato" });
+  res.json(genre);
 });
 
 // ─── Proxy universale playlist/segmenti ──────────────────────────────────────
@@ -237,6 +252,7 @@ app.get("/stream", async (req, res) => {
   }
 });
 
+// ─── HOME CARDS ───────────────────────────────────────────────────────────────
 app.get("/home/cards", async (req, res) => {
   const items = [
     ...availableMovies.map(id => ({ id, type: "movie" })),
@@ -248,44 +264,45 @@ app.get("/home/cards", async (req, res) => {
     try {
       let data;
       if (type === "movie") {
-        const res = await axios.get(`${TMDB_BASE}/movie/${id}`, {
+        const resp = await axios.get(`${TMDB_BASE}/movie/${id}`, {
           params: { api_key: TMDB_API_KEY, language: "it-IT" }
         });
         data = {
-          title: res.data.title,
-          overview: res.data.overview,
-          poster: res.data.poster_path
-            ? `${IMAGE_BASE}/w300${res.data.poster_path}`
+          title: resp.data.title,
+          overview: resp.data.overview,
+          poster: resp.data.poster_path
+            ? `${IMAGE_BASE}/w300${resp.data.poster_path}`
             : null,
-          rating: res.data.vote_average,
+          rating: resp.data.vote_average,
           hls: `/hls/movie/${id}`,
           type
         };
       } else if (type === "tv") {
-        const res = await axios.get(`${TMDB_BASE}/tv/${id}`, {
+        const resp = await axios.get(`${TMDB_BASE}/tv/${id}`, {
           params: { api_key: TMDB_API_KEY, language: "it-IT" }
         });
         data = {
-          title: res.data.name,
-          overview: res.data.overview,
-          poster: res.data.poster_path
-            ? `${IMAGE_BASE}/w300${res.data.poster_path}`
+          title: resp.data.name,
+          overview: resp.data.overview,
+          poster: resp.data.poster_path
+            ? `${IMAGE_BASE}/w300${resp.data.poster_path}`
             : null,
-          rating: res.data.vote_average,
-          hls: `/hls/show/${id}/1/1`, // default prima stagione/episodio
+          rating: resp.data.vote_average,
+          hls: `/hls/show/${id}/1/1`,
           type
         };
       } else {
-        const res = await axios.get(`${TMDB_BASE}/tv/${id.tvId}/season/${id.season}/episode/${id.episode}`, {
-          params: { api_key: TMDB_API_KEY, language: "it-IT" }
-        });
+        const resp = await axios.get(
+          `${TMDB_BASE}/tv/${id.tvId}/season/${id.season}/episode/${id.episode}`, 
+          { params: { api_key: TMDB_API_KEY, language: "it-IT" } }
+        );
         data = {
-          title: res.data.name,
-          overview: res.data.overview,
-          poster: res.data.still_path
-            ? `${IMAGE_BASE}/w300${res.data.still_path}`
+          title: resp.data.name,
+          overview: resp.data.overview,
+          poster: resp.data.still_path
+            ? `${IMAGE_BASE}/w300${resp.data.still_path}`
             : null,
-          rating: res.data.vote_average,
+          rating: resp.data.vote_average,
           hls: `/hls/show/${id.tvId}/${id.season}/${id.episode}`,
           type
         };
@@ -299,7 +316,7 @@ app.get("/home/cards", async (req, res) => {
   res.json(enriched.filter(Boolean));
 });
 
-// ─── Avvio server ────────────────────────────────────────────────────────────
+// ─── SERVER START ────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`🎬 VixStream proxy in ascolto su http://0.0.0.0:${PORT}`);
 });
