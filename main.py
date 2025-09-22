@@ -1,82 +1,106 @@
-from fastapi import FastAPI, Query, Path
-from fastapi.responses import JSONResponse, Response
+# backend/main.py
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from playwright.sync_api import sync_playwright
 import requests
-from bs4 import BeautifulSoup
+import os
 
 app = FastAPI()
 
-# ✅ Abilita CORS per frontend esterno
+# 🔓 CORS per frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Puoi restringere al tuo dominio
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 🔑 Chiave TMDB personale
 TMDB_API_KEY = "be78689897669066bef6906e501b0e10"
 
+# 🔍 Ricerca TMDB in italiano
 @app.get("/search")
-def search(query: str):
-    url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}"
-    r = requests.get(url)
-    results = r.json().get("results", [])
+def search_tmdb(query: str):
+    url = f"https://api.themoviedb.org/3/search/multi"
+    params = {
+        "api_key": TMDB_API_KEY,
+        "query": query,
+        "language": "it-IT"
+    }
+    res = requests.get(url, params=params)
+    data = res.json()
 
-    simplified = []
-    for item in results:
-        if item.get("media_type") in ["movie", "tv"]:
-            simplified.append({
-                "tmdb_id": item["id"],
-                "title": item.get("title") or item.get("name"),
-                "overview": item.get("overview"),
-                "poster": f"https://image.tmdb.org/t/p/w500{item.get('poster_path')}" if item.get("poster_path") else None,
-                "type": item["media_type"]
-            })
+    results = []
+    for item in data.get("results", []):
+        if item["media_type"] not in ["movie", "tv"]:
+            continue
 
-    return JSONResponse(content=simplified)
+        results.append({
+            "tmdb_id": item["id"],
+            "title": item.get("title") or item.get("name"),
+            "poster": f"https://image.tmdb.org/t/p/w500{item['poster_path']}" if item.get("poster_path") else "",
+            "overview": item.get("overview", ""),
+            "type": item["media_type"]
+        })
 
-def extract_hls_from_embed(embed_url: str):
-    r = requests.get(embed_url)
-    soup = BeautifulSoup(r.text, "html.parser")
-    iframe = soup.find("iframe", src=True)
-    if not iframe:
-        return None
+    return results
 
-    r2 = requests.get(iframe["src"])
-    soup2 = BeautifulSoup(r2.text, "html.parser")
-
-    for script in soup2.find_all("script"):
-        if script.string and ".m3u8" in script.string:
-            for part in script.string.split('"'):
-                if ".m3u8" in part:
-                    return part
-    return None
-
+# 🎬 Estrazione flusso HLS da VixSrc
 @app.get("/hls/movie/{tmdb_id}")
-def hls_movie(tmdb_id: int):
-    embed_url = f"https://vixsrc.to/movie/{tmdb_id}"
-    hls_link = extract_hls_from_embed(embed_url)
-    if not hls_link:
-        return {"error": "HLS non trovato"}
+def get_movie_stream(tmdb_id: int):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
 
-    manifest = requests.get(hls_link).text
-    cleaned = "\n".join([
-        line for line in manifest.splitlines()
-        if "ad" not in line.lower() and "promo" not in line.lower()
-    ])
-    return Response(content=cleaned, media_type="application/vnd.apple.mpegurl")
+        # Vai alla pagina VixSrc
+        page.goto(f"https://vixsrc.to/movie/{tmdb_id}", timeout=60000)
+        page.wait_for_timeout(3000)
 
+        hls_urls = []
+
+        def handle_request(route):
+            url = route.request.url
+            if ".m3u8" in url and url not in hls_urls:
+                hls_urls.append(url)
+            route.continue_()
+
+        page.route("**/*", handle_request)
+        page.reload()
+        page.wait_for_timeout(5000)
+
+        browser.close()
+
+        if not hls_urls:
+            return JSONResponse(content={"error": "Nessun flusso trovato"}, status_code=404)
+
+        return {"video": [{"label": "Auto", "url": hls_urls[0]}]}
+
+# 📺 Serie TV (default episodio 1x01)
 @app.get("/hls/show/{tmdb_id}/{season}/{episode}")
-def hls_show(tmdb_id: int, season: int, episode: int):
-    embed_url = f"https://vixsrc.to/tv/{tmdb_id}/{season}/{episode}"
-    hls_link = extract_hls_from_embed(embed_url)
-    if not hls_link:
-        return {"error": "HLS non trovato"}
+def get_show_stream(tmdb_id: int, season: int, episode: int):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
 
-    manifest = requests.get(hls_link).text
-    cleaned = "\n".join([
-        line for line in manifest.splitlines()
-        if "ad" not in line.lower() and "promo" not in line.lower()
-    ])
-    return Response(content=cleaned, media_type="application/vnd.apple.mpegurl")
+        page.goto(f"https://vixsrc.to/show/{tmdb_id}/{season}/{episode}", timeout=60000)
+        page.wait_for_timeout(3000)
+
+        hls_urls = []
+
+        def handle_request(route):
+            url = route.request.url
+            if ".m3u8" in url and url not in hls_urls:
+                hls_urls.append(url)
+            route.continue_()
+
+        page.route("**/*", handle_request)
+        page.reload()
+        page.wait_for_timeout(5000)
+
+        browser.close()
+
+        if not hls_urls:
+            return JSONResponse(content={"error": "Nessun flusso trovato"}, status_code=404)
+
+        return {"video": [{"label": "Auto", "url": hls_urls[0]}]}
