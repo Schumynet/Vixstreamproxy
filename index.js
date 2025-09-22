@@ -10,7 +10,12 @@ const puppeteer = require("puppeteer");
 const app  = express();
 const PORT = process.env.PORT || 10000;
 
-// ─── Middleware per JSON body parsing ────────────────────────────────────────
+// ─── CONFIGURAZIONE TMDB ─────────────────────────────────────────────────────
+const TMDB_API_KEY = process.env.TMDB_API_KEY || "be78689897669066bef6906e501b0e10";
+const TMDB_BASE    = "https://api.themoviedb.org/3";
+const IMAGE_BASE   = "https://image.tmdb.org/t/p";
+
+// ─── JSON body parsing ────────────────────────────────────────────────────────
 app.use(express.json());
 
 // ─── Cataloghi VixSrc ────────────────────────────────────────────────────────
@@ -20,25 +25,23 @@ let availableEpisodes = [];
 
 async function loadCatalogs() {
   try {
-    const [moviesRes, tvRes, episodesRes] = await Promise.all([
+    const [mv, tv, ep] = await Promise.all([
       axios.get("https://vixsrc.to/api/list/movie?lang=it"),
       axios.get("https://vixsrc.to/api/list/tv?lang=it"),
       axios.get("https://vixsrc.to/api/list/episode?lang=it")
     ]);
-    availableMovies   = moviesRes.data;
-    availableTV       = tvRes.data;
-    availableEpisodes = episodesRes.data;
+    availableMovies   = mv.data;
+    availableTV       = tv.data;
+    availableEpisodes = ep.data;
     console.log("✅ Cataloghi VixSrc caricati");
   } catch (err) {
     console.error("❌ Errore caricamento cataloghi VixSrc:", err.message);
   }
 }
-
-// Carica al boot e ricarica ogni 30 minuti
 loadCatalogs();
 setInterval(loadCatalogs, 30 * 60 * 1000);
 
-// ─── Endpoint per contenuti disponibili ──────────────────────────────────────
+// ─── Endpoint contenuti disponibili ──────────────────────────────────────────
 app.get("/home/available", (req, res) => {
   const combined = [
     ...availableMovies.map(id   => ({ tmdb_id: id, type: "movie"  })),
@@ -48,222 +51,194 @@ app.get("/home/available", (req, res) => {
   res.json(combined);
 });
 
-// 🔁 Funzione helper: costruisce l'URL del proxy
+// ─── METADATA & POSTER ───────────────────────────────────────────────────────
+// movie details + posterUrl
+app.get("/metadata/movie/:id", async (req, res) => {
+  try {
+    const { data } = await axios.get(`${TMDB_BASE}/movie/${req.params.id}`, {
+      params: { api_key: TMDB_API_KEY, language: "it-IT" }
+    });
+    const posterUrl = data.poster_path
+      ? `${IMAGE_BASE}/w300${data.poster_path}`
+      : null;
+    res.json({ ...data, posterUrl });
+  } catch (err) {
+    res.status(500).json({ error: "Impossibile recuperare metadata film" });
+  }
+});
+
+// tv details + posterUrl
+app.get("/metadata/tv/:id", async (req, res) => {
+  try {
+    const { data } = await axios.get(`${TMDB_BASE}/tv/${req.params.id}`, {
+      params: { api_key: TMDB_API_KEY, language: "it-IT" }
+    });
+    const posterUrl = data.poster_path
+      ? `${IMAGE_BASE}/w300${data.poster_path}`
+      : null;
+    res.json({ ...data, posterUrl });
+  } catch (err) {
+    res.status(500).json({ error: "Impossibile recuperare metadata serie" });
+  }
+});
+
+// episode details + stillUrl
+app.get("/metadata/tv/:tvId/season/:season/episode/:episode", async (req, res) => {
+  try {
+    const { data } = await axios.get(
+      `${TMDB_BASE}/tv/${req.params.tvId}/season/${req.params.season}/episode/${req.params.episode}`,
+      { params: { api_key: TMDB_API_KEY, language: "it-IT" } }
+    );
+    const stillUrl = data.still_path
+      ? `${IMAGE_BASE}/w300${data.still_path}`
+      : null;
+    res.json({ ...data, stillUrl });
+  } catch (err) {
+    res.status(500).json({ error: "Impossibile recuperare metadata episodio" });
+  }
+});
+
+// ─── Funzione helper proxy HLS ───────────────────────────────────────────────
 function getProxyUrl(originalUrl) {
   return `https://vixstreamproxy.onrender.com/stream?url=${encodeURIComponent(originalUrl)}`;
 }
 
-// 🔍 Estrazione playlist con regex
-async function vixsrcPlaylist(tmdbId, seasonNumber, episodeNumber) {
-  const targetUrl = (seasonNumber !== undefined)
-    ? `https://vixsrc.to/tv/${tmdbId}/${seasonNumber}/${episodeNumber}/?lang=it`
+// ─── Estrazione playlist VixSrc ──────────────────────────────────────────────
+async function vixsrcPlaylist(tmdbId, season, episode) {
+  const url = episode != null
+    ? `https://vixsrc.to/tv/${tmdbId}/${season}/${episode}/?lang=it`
     : `https://vixsrc.to/movie/${tmdbId}?lang=it`;
-
-  const response = await axios.get(targetUrl, {
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-      "Referer":    "https://vixsrc.to"
-    }
+  const resp = await axios.get(url, {
+    headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://vixsrc.to" }
   });
-
-  const text = response.data;
-  const m = new RegExp(
-    "token': '(.+)',\\n[ ]+'expires': '(.+)',\\n.+\\n.+\\n.+url: '(.+)',\\n[ ]+}\\n[ ]+window.canPlayFHD = (false|true)"
-  ).exec(text);
+  const txt = resp.data;
+  const m = /token': '(.+)',\s*'expires': '(.+)',[\s\S]+?url: '(.+)',[\s\S]+?window.canPlayFHD = (false|true)/.exec(txt);
   if (!m) return null;
-
-  const [ , token, expires, rawUrl, canPlayFHD ] = m;
-  const playlistUrl = new URL(rawUrl);
-  const b = playlistUrl.searchParams.get("b");
-
-  playlistUrl.searchParams.set("token", token);
-  playlistUrl.searchParams.set("expires", expires);
-  if (b !== null)      playlistUrl.searchParams.set("b", b);
-  if (canPlayFHD === "true") playlistUrl.searchParams.set("h", "1");
-
-  return playlistUrl.toString();
+  const [, token, expires, raw, canFHD] = m;
+  const playlist = new URL(raw);
+  const b = playlist.searchParams.get("b");
+  playlist.searchParams.set("token", token);
+  playlist.searchParams.set("expires", expires);
+  if (b != null)           playlist.searchParams.set("b", b);
+  if (canFHD === "true")   playlist.searchParams.set("h", "1");
+  return playlist.toString();
 }
 
-// 🧠 Fallback Puppeteer per estrazione in pagina
+// ─── Fallback Puppeteer ───────────────────────────────────────────────────────
 async function extractWithPuppeteer(url) {
-  let playlistUrl = null;
+  let pl = null;
   const browser = await puppeteer.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    args: ["--no-sandbox","--disable-setuid-sandbox"]
   });
-
   try {
     const page = await browser.newPage();
     await page.setRequestInterception(true);
-
-    page.on("request", request => {
-      const reqUrl = request.url();
-      if (!playlistUrl && reqUrl.includes("playlist") && reqUrl.includes("rendition=")) {
-        playlistUrl = reqUrl;
+    page.on("request", req => {
+      const u = req.url();
+      if (!pl && u.includes("playlist") && u.includes("rendition=")) {
+        pl = u;
       }
-      request.continue();
+      req.continue();
     });
-
     await page.goto(url, { timeout: 60000 });
     await page.waitForTimeout(10000);
-  } catch (e) {
-    // Ignora errori di estrazione
-  } finally {
-    await browser.close();
-  }
-
-  return playlistUrl;
+  } catch {}
+  await browser.close();
+  return pl;
 }
 
-// 🎬 Endpoint HLS per film
+// ─── HLS per film ─────────────────────────────────────────────────────────────
 app.get("/hls/movie/:id", async (req, res) => {
-  const { id } = req.params;
-  let playlistUrl = await vixsrcPlaylist(id);
-  if (!playlistUrl) {
-    playlistUrl = await extractWithPuppeteer(`https://vixsrc.to/movie/${id}`);
-  }
-  if (!playlistUrl) {
-    return res.status(404).json({ error: "Flusso non trovato" });
-  }
-  res.json({ url: getProxyUrl(playlistUrl) });
+  let pl = await vixsrcPlaylist(req.params.id);
+  if (!pl) pl = await extractWithPuppeteer(`https://vixsrc.to/movie/${req.params.id}`);
+  if (!pl) return res.status(404).json({ error: "Flusso non trovato" });
+  res.json({ url: getProxyUrl(pl) });
 });
 
-// 📺 Endpoint HLS per serie TV
+// ─── HLS per serie TV ─────────────────────────────────────────────────────────
 app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   const { id, season, episode } = req.params;
-  let playlistUrl = await vixsrcPlaylist(id, season, episode);
-  if (!playlistUrl) {
-    playlistUrl = await extractWithPuppeteer(`https://vixsrc.to/tv/${id}/${season}/${episode}`);
-  }
-  if (!playlistUrl) {
-    return res.status(404).json({ error: "Flusso non trovato" });
-  }
-  res.json({ url: getProxyUrl(playlistUrl) });
+  let pl = await vixsrcPlaylist(id, season, episode);
+  if (!pl) pl = await extractWithPuppeteer(`https://vixsrc.to/tv/${id}/${season}/${episode}`);
+  if (!pl) return res.status(404).json({ error: "Flusso non trovato" });
+  res.json({ url: getProxyUrl(pl) });
 });
 
-// 🔁 Proxy universale per playlist e segmenti
+// ─── Proxy universale playlist/segmenti ──────────────────────────────────────
 app.get("/stream", async (req, res) => {
-  const targetUrl = req.query.url;
-  if (!targetUrl) {
-    return res.status(400).send("Missing url");
-  }
+  const target = req.query.url;
+  if (!target) return res.status(400).send("Missing url");
+  const isM3U8 = target.includes(".m3u8") || target.includes("playlist");
+  let done = false;
 
-  const isM3U8 = /\.(m3u8|mpd)$/.test(targetUrl) || targetUrl.includes("playlist");
-  let responded = false;
-
-  const sendError = (status, msg) => {
-    if (!responded) {
-      responded = true;
-      res.status(status).send(msg);
-    }
+  const sendErr = (st, msg) => {
+    if (!done) { done = true; res.status(st).send(msg); }
   };
 
   if (isM3U8) {
     try {
-      const proxyRes = await fetch(targetUrl, {
-        headers: {
-          "Referer":    "https://vixsrc.to",
-          "User-Agent": "Mozilla/5.0"
-        },
+      const pr = await fetch(target, {
+        headers: { "Referer":"https://vixsrc.to", "User-Agent":"Mozilla/5.0" },
         timeout: 10000
       });
-      let text = await proxyRes.text();
-      const base = targetUrl.split("/").slice(0, -1).join("/");
-
-      // Riscrivi URI e segmenti
-      text = text
-        .replace(/URI="([^"]+)"/g, (_, uri) => {
-          const abs = uri.startsWith("http")
-            ? uri
-            : uri.startsWith("/")
-              ? `https://vixsrc.to${uri}`
-              : `${base}/${uri}`;
+      let txt = await pr.text();
+      const base = target.split("/").slice(0,-1).join("/");
+      txt = txt
+        .replace(/URI="([^"]+)"/g, (_, u) => {
+          const abs = u.startsWith("http")
+            ? u
+            : u.startsWith("/")
+              ? `https://vixsrc.to${u}`
+              : `${base}/${u}`;
           return `URI="${getProxyUrl(abs)}"`;
         })
-        .replace(/^([^#\r\n].+\.(ts|key|vtt))$/gm, (m) => {
-          return getProxyUrl(`${base}/${m}`);
-        });
-
-      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      res.send(text);
-      responded = true;
+        .replace(/^([^#\r\n].+\.(ts|key|vtt))$/gm, m => getProxyUrl(`${base}/${m}`));
+      res.setHeader("Content-Type","application/vnd.apple.mpegurl");
+      res.send(txt);
+      done = true;
     } catch (err) {
       console.error("Errore proxy m3u8:", err.message);
-      sendError(500, "Errore proxy m3u8");
+      sendErr(500,"Errore proxy m3u8");
     }
   } else {
     try {
-      const urlObj = new URL(targetUrl);
-      const client = urlObj.protocol === "https:" ? https : http;
-
-      const proxyReq = client.get(targetUrl, {
+      const uObj = new URL(target);
+      const client = uObj.protocol==="https:" ? https : http;
+      const proxyReq = client.get(target, {
         headers: {
-          "Referer":    "https://vixsrc.to",
-          "User-Agent": "Mozilla/5.0",
-          "Accept":     "*/*",
-          "Connection": "keep-alive"
+          "Referer":"https://vixsrc.to",
+          "User-Agent":"Mozilla/5.0",
+          "Accept":"*/*",
+          "Connection":"keep-alive"
         },
-        timeout: 10000
+        timeout:10000
       }, proxyRes => {
         res.writeHead(proxyRes.statusCode, proxyRes.headers);
         proxyRes.pipe(res);
-        responded = true;
+        done = true;
       });
-
       proxyReq.on("timeout", () => {
         proxyReq.destroy();
-        sendError(504, "Timeout");
+        sendErr(504,"Timeout");
       });
-
       proxyReq.on("error", err => {
-        console.error("Errore proxy stream:", err.message);
-        sendError(500, "Errore proxy media");
+        console.error("Errore proxy media:", err.message);
+        sendErr(500,"Errore proxy media");
       });
-
       req.on("close", () => {
         proxyReq.destroy();
-        responded = true;
+        done = true;
       });
     } catch (err) {
       console.error("URL invalido:", err.message);
-      sendError(400, "URL invalido");
+      sendErr(400,"URL invalido");
     }
   }
 });
 
-// 🧠 Salvataggio progresso di riproduzione
-app.post("/progress/save", (req, res) => {
-  const {
-    ip,
-    tmdbId,
-    contentType,
-    season,
-    episode,
-    currentTime,
-    duration,
-    title
-  } = req.body;
-
-  if (!tmdbId || currentTime == null || duration == null) {
-    return res.status(400).json({ error: "Dati incompleti" });
-  }
-
-  console.log("📥 Progresso ricevuto:", {
-    ip,
-    tmdbId,
-    contentType,
-    season,
-    episode,
-    currentTime,
-    duration,
-    title,
-    timestamp: new Date().toISOString()
-  });
-
-  res.json({ success: true });
-});
-
-// 🚀 Avvio server
+// ─── Avvio server ────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`🎬 VixStream HLS proxy in ascolto su http://0.0.0.0:${PORT}`);
+  console.log(`🎬 VixStream proxy in ascolto su http://0.0.0.0:${PORT}`);
 });
+```[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/Nbobito/wopperbot/tree/4485f275832bdcad630669a98ebb67735d7eaf0d/index.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "1")[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/utkarshOEE/task-manager/tree/77d5713d8cee0f50590d0c6ea01448e24fbc11b0/src%2Findex.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "2")[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/ngtaloc/TotNghiep-Project/tree/8b72be93496d37f227ac7d87d5aae25d5241d519/WebEng%2FWebEng%2FContent%2FTemplate%2Fplugins%2Fraphael%2Fraphael.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "3")[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/rohenha/assets-starter/tree/eedeb96ba3abbad178561e54c90789b5c30dd621/.builder%2Futils%2Fserver.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "4")
