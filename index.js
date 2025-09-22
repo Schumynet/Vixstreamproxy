@@ -273,7 +273,7 @@ app.get("/stream", async (req, res) => {
         timeout: 10000
       });
       let txt = await pr.text();
-      const base = target.split("/").slice(0, -1).join("/");
+      const base = new URL(target).origin + target.substring(0, target.lastIndexOf("/"));
       txt = txt
         .replace(/URI="([^"]+)"/g, (_, u) => {
           const abs = u.startsWith("http")
