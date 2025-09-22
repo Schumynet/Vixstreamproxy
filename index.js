@@ -7,7 +7,7 @@ const app = express();
 // 🔑 Chiave TMDB
 const TMDB_KEY = "be78689897669066bef6906e501b0e10";
 
-// 🔍 Endpoint di ricerca
+// 🔍 Ricerca contenuti via TMDB
 app.get("/search", async (req, res) => {
   const query = req.query.q;
   if (!query) return res.status(400).json({ error: "Parametro 'q' mancante" });
@@ -40,14 +40,14 @@ app.get("/search", async (req, res) => {
   }
 });
 
-// 🎬 Endpoint per film
+// 🎬 Flusso film
 app.get("/hls/movie/:id", async (req, res) => {
   const id = req.params.id;
   const url = `https://vixsrc.to/movie/${id}`;
   await extractStream(url, res);
 });
 
-// 📺 Endpoint per serie TV
+// 📺 Flusso serie TV
 app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   const { id, season, episode } = req.params;
   const url = `https://vixsrc.to/tv/${id}/${season}/${episode}`;
@@ -88,7 +88,21 @@ async function extractStream(url, res) {
 
     await page.goto(url, { timeout: 60000 });
 
-    // ⏳ Attendi che il player carichi
+    // ⏳ Aspetta l'iframe
+    await page.waitForSelector("iframe");
+    const frameHandle = await page.$("iframe");
+    const frame = await frameHandle.contentFrame();
+
+    // 🖱️ Simula click sul bottone del player
+    try {
+      await frame.waitForSelector("button, .vjs-big-play-button", { timeout: 10000 });
+      await frame.click("button, .vjs-big-play-button");
+      console.log("🖱️ Click sul player eseguito");
+    } catch (clickErr) {
+      console.warn("⚠️ Nessun bottone cliccabile trovato:", clickErr.message);
+    }
+
+    // ⏳ Attendi che il flusso venga richiesto
     await new Promise(resolve => setTimeout(resolve, 8000));
 
     await browser.close();
