@@ -3,9 +3,10 @@ const puppeteer = require("puppeteer");
 const axios = require("axios");
 const app = express();
 
+// 🔑 Chiave TMDB
 const TMDB_KEY = "be78689897669066bef6906e501b0e10";
 
-// 🔍 Cerca contenuti
+// 🔍 Ricerca contenuti via TMDB
 app.get("/search", async (req, res) => {
   const query = req.query.q;
   if (!query) return res.status(400).json({ error: "Parametro 'q' mancante" });
@@ -38,22 +39,27 @@ app.get("/search", async (req, res) => {
   }
 });
 
-// 🎬 Film
+// 🎬 Flusso film
 app.get("/hls/movie/:id", async (req, res) => {
-  const url = `https://vixsrc.to/movie/${req.params.id}`;
+  const id = req.params.id;
+  const url = `https://vixsrc.to/movie/${id}`;
   await extractStream(url, res);
 });
 
-// 📺 Serie TV
+// 📺 Flusso serie TV
 app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   const { id, season, episode } = req.params;
   const url = `https://vixsrc.to/tv/${id}/${season}/${episode}`;
   await extractStream(url, res);
 });
 
-// 🧠 Estrazione flusso
+// 🧠 Funzione comune per estrazione flusso via Puppeteer
 async function extractStream(url, res) {
+  let hlsUrl = null;
+
   try {
+    console.log("🌐 Navigazione verso:", url);
+
     const browser = await puppeteer.launch({
       headless: true,
       args: [
@@ -66,30 +72,35 @@ async function extractStream(url, res) {
     });
 
     const page = await browser.newPage();
-    let hlsUrl = null;
 
     await page.setRequestInterception(true);
     page.on("request", request => {
       const reqUrl = request.url();
-      if (reqUrl.includes(".m3u8") && !hlsUrl) hlsUrl = reqUrl;
+      if (reqUrl.includes(".m3u8") && !hlsUrl) {
+        hlsUrl = reqUrl;
+        console.log("🎯 Flusso intercettato:", hlsUrl);
+      }
       request.continue();
     });
 
-    console.log("🌐 Navigazione:", url);
     await page.goto(url, { timeout: 60000 });
     await page.waitForTimeout(5000);
     await browser.close();
 
-    if (!hlsUrl) return res.status(404).json({ error: "Nessun flusso trovato" });
+    if (!hlsUrl) {
+      console.warn("⚠️ Nessun flusso trovato per:", url);
+      return res.status(404).json({ error: "Nessun flusso trovato" });
+    }
+
     res.json({ video: [{ label: "Auto", url: hlsUrl }] });
   } catch (err) {
     console.error("🔥 Errore Puppeteer:", err.message);
-    res.status(500).json({ error: "Errore interno" });
+    res.status(500).json({ error: "Errore interno", debug: err.message });
   }
 }
 
-// 🚀 Porta dinamica
+// 🚀 Avvio server
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`✅ FabioStream attivo su porta ${PORT}`);
+  console.log(`✅ VixStream attivo su porta ${PORT}`);
 });
