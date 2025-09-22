@@ -55,6 +55,62 @@ app.get("/genres/:id", (req, res) => {
   res.json(genre);
 });
 
+// ─── DISCOVER MOVIE PER GENERE ───────────────────────────────────────────────
+app.get("/discover/movie", async (req, res) => {
+  const { with_genres, primary_release_year } = req.query;
+  try {
+    const { data } = await axios.get(`${TMDB_BASE}/discover/movie`, {
+      params: {
+        api_key: TMDB_API_KEY,
+        language: "it-IT",
+        sort_by: "popularity.desc",
+        with_genres,
+        primary_release_year
+      }
+    });
+    const results = data.results.map(item => ({
+      id: item.id,
+      title: item.title,
+      poster: item.poster_path ? `${IMAGE_BASE}/w500${item.poster_path}` : null,
+      vote: item.vote_average,
+      year: item.release_date?.split("-")[0] || null,
+      genre_ids: item.genre_ids
+    }));
+    res.json(results);
+  } catch (err) {
+    console.error("Errore discover movie:", err.message);
+    res.status(500).json({ error: "Errore discover movie" });
+  }
+});
+
+// ─── DISCOVER TV PER GENERE ──────────────────────────────────────────────────
+app.get("/discover/tv", async (req, res) => {
+  const { with_genres, first_air_date_year } = req.query;
+  try {
+    const { data } = await axios.get(`${TMDB_BASE}/discover/tv`, {
+      params: {
+        api_key: TMDB_API_KEY,
+        language: "it-IT",
+        sort_by: "popularity.desc",
+        with_genres,
+        first_air_date_year
+      }
+    });
+    const results = data.results.map(item => ({
+      id: item.id,
+      title: item.name,
+      poster: item.poster_path ? `${IMAGE_BASE}/w500${item.poster_path}` : null,
+      vote: item.vote_average,
+      year: item.first_air_date?.split("-")[0] || null,
+      genre_ids: item.genre_ids
+    }));
+    res.json(results);
+  } catch (err) {
+    console.error("Errore discover tv:", err.message);
+    res.status(500).json({ error: "Errore discover tv" });
+  }
+});
+
 // ─── CARICAMENTO CATALOGHI VixSrc ─────────────────────────────────────────────
 let availableMovies   = [];
 let availableTV       = [];
