@@ -133,3 +133,5 @@
     video.volume = parseFloat(volumeSlider.value);
   };
 })();
+
+app.use(express.static("public"))
