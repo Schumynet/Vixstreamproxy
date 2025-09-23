@@ -145,8 +145,8 @@ app.get("/hls/show/:id/:season/:episode", async (req, res) => {
 
     const seasonNum = parseInt(season, 10);
     const episodeNum = parseInt(episode, 10);
-    const nextEpisode = `/hls/show/${id}/${seasonNum}/${episodeNum + 1}`;
-    const prevEpisode = episodeNum > 1 ? `/hls/show/${id}/${seasonNum}/${episodeNum - 1}` : null;
+    const nextEpisode = `/watch/show/${id}/${seasonNum}/${episodeNum + 1}`;
+    const prevEpisode = episodeNum > 1 ? `/watch/show/${id}/${seasonNum}/${episodeNum - 1}` : null;
 
     res.json({
       title: meta.name,
@@ -240,8 +240,4 @@ app.get("/stream", async (req, res) => {
       sendErr(400, "URL invalido");
     }
   }
-});
-
-app.listen(PORT, () => {
-  console.log(`🎬 VixStream proxy in ascolto su http://0.0.0.0:${PORT}`);
 });
