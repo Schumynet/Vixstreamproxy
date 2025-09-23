@@ -241,3 +241,7 @@ app.get("/stream", async (req, res) => {
     }
   }
 });
+
+app.listen(PORT, () => {
+  console.log(`🎬 VixStream proxy in ascolto su http://0.0.0.0:${PORT}`);
+});
