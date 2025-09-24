@@ -1,5 +1,4 @@
-// index.js - VixStream proxy (complete, ready for Render)
-// Includes updated /watch HTML with your provided video + controls and safe JSON-serialized injections
+// index.js - VixStream proxy (ready to paste)
 const express   = require("express");
 const axios     = require("axios");
 const fetch     = require("node-fetch");
@@ -15,7 +14,7 @@ const TMDB_BASE    = "https://api.themoviedb.org/3";
 const IMAGE_BASE   = "https://image.tmdb.org/t/p";
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public"))); // serve client files
+app.use(express.static(path.join(__dirname, "public")));
 
 // Simple CORS for all routes
 app.use((req, res, next) => {
@@ -26,7 +25,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Utilities
 function forceHttps(url) {
   try {
     if (!url || typeof url !== "string") return url;
@@ -43,7 +41,6 @@ function getProxyUrl(originalUrl) {
   return `${process.env.PROXY_BASE || `https://vixstreamproxy.onrender.com`}/stream?url=${encodeURIComponent(safe)}`;
 }
 
-// Try to extract playlist tokens from vixsrc page
 async function vixsrcPlaylist(tmdbId, season, episode) {
   const url = episode != null
     ? `https://vixsrc.to/tv/${tmdbId}/${season}/${episode}/?lang=it`
@@ -65,7 +62,6 @@ async function vixsrcPlaylist(tmdbId, season, episode) {
   return playlist.toString();
 }
 
-// Puppeteer extractor: intercept requests to find .m3u8
 async function extractWithPuppeteer(url) {
   let pl = null;
   let browser = null;
@@ -90,7 +86,6 @@ async function extractWithPuppeteer(url) {
   return pl;
 }
 
-// Parse tracks from an m3u8 for qualities, audio and subtitles
 async function parseTracks(m3u8Url) {
   try {
     const res = await fetch(forceHttps(m3u8Url), {
@@ -120,7 +115,7 @@ async function parseTracks(m3u8Url) {
   }
 }
 
-// ── HLS metadata endpoints ───────────────────────────────────────────────────
+// HLS endpoints
 app.get("/hls/movie/:id", async (req, res) => {
   const tmdbId = req.params.id;
   try {
@@ -202,14 +197,12 @@ app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   }
 });
 
-// ── Resolve potential wrapper to real stream URL ────────────────────────────
 async function resolveStreamUrl(maybeUrl) {
   try {
     const u = String(maybeUrl);
     if (/\.(m3u8)$/i.test(u) || u.toLowerCase().includes("playlist") || u.toLowerCase().includes("/hls/")) {
       return u;
     }
-
     try {
       const r = await fetch(forceHttps(u), { headers: { "User-Agent":"Mozilla/5.0", "Referer":"https://vixsrc.to" }, timeout: 10000 });
       const ct = r.headers.get("content-type") || "";
@@ -225,7 +218,6 @@ async function resolveStreamUrl(maybeUrl) {
     } catch (e) {
       // fall through to puppeteer
     }
-
     const pl = await extractWithPuppeteer(u);
     if (pl) return pl;
   } catch (e) {
@@ -234,7 +226,6 @@ async function resolveStreamUrl(maybeUrl) {
   return null;
 }
 
-// ── Stream proxy endpoint ───────────────────────────────────────────────────
 app.get("/stream", async (req, res) => {
   const targetRaw = req.query.url;
   if (!targetRaw) return res.status(400).send("Missing url");
@@ -327,7 +318,7 @@ app.get("/stream", async (req, res) => {
   }
 });
 
-// ── Player page (debug /watch) with updated HTML that includes your video + controls ─────────────────────
+// /watch page (player) - build HTML with safe concatenation
 app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
   const { type, id, season, episode } = req.params;
   const apiPath = type === "movie"
@@ -338,20 +329,19 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
     const baseUrl = `${req.protocol}://${req.get("host")}`;
     const { data } = await axios.get(`${baseUrl}${apiPath}`, { timeout:15000 });
 
-    // Safe replacements for injected values
     const title = (data.title || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
     const poster = data.poster || "";
-    const proxyUrl = data.url || "";
     const overview = (data.metadata && data.metadata.overview) ? data.metadata.overview.replace(/</g,"&lt;").replace(/>/g,"&gt;") : "";
     const nextEpisode = data.nextEpisode || "";
     const prevEpisode = data.prevEpisode || "";
     const skipIntro = data.skipIntroTime || 60;
 
-    return res.send(`<!DOCTYPE html>
-<html lang="it">
+    // build HTML using concatenation for injected values (safe)
+    const html = '<!DOCTYPE html>\n' +
+`<html lang="it">
 <head>
   <meta charset="utf-8" />
-  <title>VixStream — Player compatto (finale) - ${title}</title>
+  <title>VixStream — Player compatto (finale) - ` + title + `</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <style>
@@ -372,87 +362,40 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
     .item{width:98px;text-align:center;cursor:pointer}
     .item img{width:100%;border-radius:6px;display:block}
     .item small{display:block;margin-top:6px;color:#a8a8a8;font-size:12px}
-
-    /* modal base */
     .modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:120;align-items:center;justify-content:center;padding:12px;overflow:auto}
     .card{background:var(--panel);width:100%;max-width:960px;border-radius:10px;padding:var(--pad);box-sizing:border-box;box-shadow:0 10px 30px rgba(0,0,0,0.7);display:flex;flex-direction:column;max-height:90vh;overflow:hidden}
     .header-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
     .close-btn{background:transparent;border:0;color:var(--text);font-size:16px;cursor:pointer;padding:6px;border-radius:6px}
-
     .detailInner{display:flex;gap:12px;align-items:flex-start}
     .detailInner img{width:120px;border-radius:6px}
     .detailInfo h2{margin:0;font-size:16px}
     .detailInfo p{color:#ddd;margin-top:6px;line-height:1.3;font-size:13px}
-
-    /* player */
     .player-card{padding:0;display:flex;flex-direction:column;border-radius:8px;overflow:hidden}
     .playerHeader{display:flex;align-items:center;gap:8px;padding:10px;background:rgba(0,0,0,0.6);border-bottom:1px solid #111}
     .playerBack{background:transparent;border:0;color:var(--text);padding:6px;border-radius:6px;cursor:pointer}
     .playerTitle{font-size:14px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-
     .video-wrapper{position:relative;width:100%;max-height:var(--compact-h);background:#000}
     @media (max-width:900px){ .video-wrapper{max-height:var(--compact-h-sm)} }
     video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
-
-    /* center controls flat, no background */
-    .center-controls{
-      position:absolute;
-      top:50%;
-      left:50%;
-      transform:translate(-50%,-50%);
-      display:flex;
-      gap:var(--gap);
-      align-items:center;
-      justify-content:center;
-      z-index:10;
-      transition:opacity .16s ease,transform .16s ease;
-      pointer-events:auto;
-    }
+    .center-controls{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);display:flex;gap:var(--gap);align-items:center;justify-content:center;z-index:10;transition:opacity .16s ease,transform .16s ease;pointer-events:auto;}
     .center-controls.hidden{opacity:0;pointer-events:none;transform:translate(-50%,-45%);}
-    .nf-btn{
-      width:48px;height:48px;
-      background:transparent;border:0;padding:0;margin:0;
-      display:inline-flex;align-items:center;justify-content:center;
-      cursor:pointer;transition:transform .12s ease,opacity .12s ease;
-    }
+    .nf-btn{width:48px;height:48px;background:transparent;border:0;padding:0;margin:0;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:transform .12s ease,opacity .12s ease;}
     .nf-btn svg{width:60%;height:60%;fill:#fff;display:block}
-    .nf-btn:hover{transform:scale(1.08)}
-    .nf-btn:active{transform:scale(0.96)}
     .nf-play{width:64px;height:64px}
-    .nf-play svg{width:100%;height:100%}
-
     .bottom-bar{display:flex;align-items:center;justify-content:space-between;padding:8px;background:rgba(0,0,0,0.76);gap:8px}
     .left{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
     .right{display:flex;align-items:center;gap:8px}
     .progress-track{flex:1;height:6px;background:rgba(255,255,255,0.06);border-radius:6px;overflow:hidden}
     .progress-track input[type=range]{width:100%;appearance:none;height:6px;background:transparent;margin:0}
-    .progress-track input[type=range]::-webkit-slider-thumb{appearance:none;width:10px;height:10px;border-radius:50%;background:var(--accent);margin-top:-2px}
     .icon-btn{width:36px;height:36px;border-radius:8px;border:0;background:transparent;color:var(--text);display:flex;align-items:center;justify-content:center;cursor:pointer}
     .mini-menu{position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);min-width:160px;background:rgba(20,20,20,0.98);color:var(--text);border-radius:8px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,0.6);z-index:70;display:none}
     .mini-menu.visible{display:block}
-    .mini-menu .opt{padding:8px 10px;border-radius:6px;cursor:pointer;font-size:14px;color:#fff}
-    .mini-menu .opt:hover{background:rgba(255,255,255,0.03)}
-    .mini-menu .header{font-size:12px;color:#bbb;padding:0 8px 6px;margin-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.03)}
-    .menu-container{position:relative;display:flex;align-items:center;justify-content:center}
-
-    /* carousel */
     .carousel-wrapper{position:relative;overflow:hidden;padding:6px 0}
     .carousel-scroll{display:flex;gap:10px;overflow-x:auto;scroll-behavior:smooth;padding:6px 12px}
-    .carousel-scroll::-webkit-scrollbar{display:none}
-    .carousel-arrow{position:absolute;top:50%;transform:translateY(-50%);background:rgba(0,0,0,0.6);color:#fff;border:none;font-size:18px;padding:8px;border-radius:50%;cursor:pointer;z-index:10}
-    .carousel-arrow.left{left:6px}
-    .carousel-arrow.right{right:6px}
     .cardSmall, .epSmall{min-width:120px;flex:0 0 auto;text-align:center;cursor:pointer}
-    .cardSmall img, .epSmall img{width:100%;border-radius:6px}
-    .cardSmall .label, .epSmall .epTitle{margin-top:6px;font-size:13px;color:#ccc}
-    .epSmall .epInfo{font-size:12px;color:#aaa}
-
     @media (max-width:600px){ .nf-btn{width:44px;height:44px} .nf-play{width:56px;height:56px} .playerHeader{padding:8px} }
-
     .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:14px;background:rgba(20,20,20,0.95);color:#fff;padding:8px 12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.6);z-index:200;display:none}
     .toast.show{display:block;animation:toastin .28s ease}
-    @keyframes toastin{from{transform:translate(-50%,8px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
-    .sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
   </style>
 </head>
 <body>
@@ -469,7 +412,6 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
     <section id="results"></section>
   </main>
 
-  <!-- DETAIL modal -->
   <div id="detailModal" class="modal" aria-hidden="true">
     <div class="card">
       <div class="header-row">
@@ -497,7 +439,6 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
     </div>
   </div>
 
-  <!-- SEASONS modal -->
   <div id="seasonsModal" class="modal" aria-hidden="true">
     <div class="card">
       <div class="header-row">
@@ -512,7 +453,6 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
     </div>
   </div>
 
-  <!-- EPISODES modal -->
   <div id="episodesModal" class="modal" aria-hidden="true">
     <div class="card">
       <div class="header-row">
@@ -527,7 +467,6 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
     </div>
   </div>
 
-  <!-- PLAYER compact (your provided video + controls integrated) -->
   <div id="playerModal" class="modal" aria-hidden="true">
     <div class="card player-card" style="max-width:980px;">
       <div class="playerHeader">
@@ -537,7 +476,7 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
       </div>
 
       <div class="video-wrapper" id="videoWrapper">
-        <video id="video" playsinline crossorigin="anonymous" preload="metadata" poster="${poster}"></video>
+        <video id="video" playsinline crossorigin="anonymous" preload="metadata" poster="` + poster + `"></video>
 
         <div id="centerControls" class="center-controls hidden" role="group" aria-label="Controlli centrali">
           <button id="skipPrevEp" class="nf-btn" aria-label="Skip precedente" title="Skip precedente">
@@ -610,9 +549,9 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
   <div id="toast" class="toast" role="status"></div>
 
   <script>
-    // Config (safe JSON-serialized)
-    const TMDB_API_KEY = ${JSON.stringify(TMDB_API_KEY)};
-    const proxyBase = ${JSON.stringify(process.env.PROXY_BASE || "https://vixstreamproxy.onrender.com")};
+    // Config (serialized safely)
+    const TMDB_API_KEY = ` + JSON.stringify(TMDB_API_KEY) + `;
+    const proxyBase = ` + JSON.stringify(process.env.PROXY_BASE || "https://vixstreamproxy.onrender.com") + `;
 
     // Helpers
     const $ = id => document.getElementById(id);
@@ -653,7 +592,7 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
       else { playIcon.style.display='block'; pauseIcon.style.display='none'; }
     }
 
-    // Search
+    // Search and UI wiring (same behavior as your script)
     async function doSearch(){
       const q = searchInput.value.trim(); if(!q) return;
       results.innerHTML = '<div style="padding:12px;color:#aaa">Ricerca in corso…</div>';
@@ -678,7 +617,7 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
     searchBtn.addEventListener('click', doSearch);
     searchInput.addEventListener('keydown', e=>{ if(e.key==='Enter') doSearch(); });
 
-    // Click result -> detail
+    // result click -> detail
     results.addEventListener('click', async ev=>{
       const el = ev.target.closest('.item'); if(!el) return;
       window.selectedId = el.dataset.id; window.selectedType = el.dataset.type;
@@ -698,7 +637,7 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
     detailClose.addEventListener('click', ()=> hideModal(detailModal));
     detailBack.addEventListener('click', ()=> hideModal(detailModal));
 
-    // Play from detail
+    // play from detail
     detailPlay.addEventListener('click', async ()=>{
       if(window.playLock) return; window.playLock = true; setTimeout(()=>window.playLock=false,800);
       if(!window.selectedTMDB) return;
@@ -765,7 +704,6 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
       const amount = el.offsetWidth * 0.8; el.scrollBy({ left: dir * amount, behavior: 'smooth' });
     }
 
-    // Stream start & open player
     async function startStreamWithChecks(proxyUrl){
       try{
         const res = await fetch(proxyUrl); if(!res.ok) throw new Error('Proxy error');
@@ -775,7 +713,6 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
       }catch(err){ console.error(err); showToast('Errore stream'); }
     }
 
-    // openPlayer and controls wiring
     let hls = null;
     async function openPlayer(data){
       showModal(playerModal);
@@ -807,7 +744,6 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
       video.addEventListener('pause', ()=>{ setPlaying(false); showControls(); }, false);
     }
 
-    // Controls interactions
     const showControls = (() => {
       let hideTimeout = null;
       return function(){
@@ -832,7 +768,6 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
 
     fullscreenBtn.addEventListener('click', ()=>{ if(document.fullscreenElement) document.exitFullscreen(); else playerModal.requestFullscreen(); });
 
-    // Mini menus
     function setupMini(btn, menu, onSelect){
       if(!btn||!menu) return;
       btn.addEventListener('click', e=>{ e.stopPropagation(); const visible = menu.classList.contains('visible'); closeAllMenus(); if(!visible){ menu.classList.add('visible'); menu.setAttribute('aria-hidden','false'); }});
@@ -844,21 +779,19 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
     setupMini(btnAudio, miniAudio, opt=>{ showToast('Audio: '+opt.textContent); if(hls) hls.audioTrack = parseInt(opt.dataset.a,10); });
     setupMini(btnSub, miniSub, opt=>{ showToast('Sottotitoli: '+opt.textContent); if(hls) hls.subtitleTrack = parseInt(opt.dataset.s,10); });
 
-    // Back / close actions
     playerBack.addEventListener('click', ()=>{ if(hls){ try{ hls.destroy(); }catch(e){} hls=null; } try{ video.pause(); video.removeAttribute('src'); video.load(); }catch(e){} hideModal(playerModal); });
 
-    // Close modals by clicking outside
     [detailModal,seasonsModal,episodesModal,playerModal].forEach(mod=>{ mod.addEventListener('click', e=>{ if(e.target===mod) hideModal(mod); }); });
-
-    // ESC key
     document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ if(playerModal.style.display==='flex'){ playerBack.click(); } else if(episodesModal.style.display==='flex'){ hideModal(episodesModal); } else if(seasonsModal.style.display==='flex'){ hideModal(seasonsModal); } else if(detailModal.style.display==='flex'){ hideModal(detailModal); } }});
 
-    // init
     results.innerHTML = '<div style="padding:12px;color:#aaa">Cerca un titolo sopra</div>';
     searchInput.focus();
   </script>
 </body>
-</html>`);
+</html>`; // end html
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(html);
   } catch (err) {
     console.error("Errore /watch:", err && err.message);
     res.status(500).send("Errore nel caricamento del player");
