@@ -1,4 +1,5 @@
-// index.js - VixStream proxy (complete, /watch HTML updated with your video + controls)
+// index.js - VixStream proxy (complete, ready for Render)
+// Includes updated /watch HTML with your provided video + controls and safe JSON-serialized injections
 const express   = require("express");
 const axios     = require("axios");
 const fetch     = require("node-fetch");
@@ -609,9 +610,9 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
   <div id="toast" class="toast" role="status"></div>
 
   <script>
-    // Config
-    const TMDB_API_KEY = '${TMDB_API_KEY}';
-    const proxyBase = '${process.env.PROXY_BASE || "https://vixstreamproxy.onrender.com"}';
+    // Config (safe JSON-serialized)
+    const TMDB_API_KEY = ${JSON.stringify(TMDB_API_KEY)};
+    const proxyBase = ${JSON.stringify(process.env.PROXY_BASE || "https://vixstreamproxy.onrender.com")};
 
     // Helpers
     const $ = id => document.getElementById(id);
@@ -699,7 +700,7 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
 
     // Play from detail
     detailPlay.addEventListener('click', async ()=>{
-      if(window.playLock) return; window.lockPlay = true; setTimeout(()=>window.lockPlay=false,800);
+      if(window.playLock) return; window.playLock = true; setTimeout(()=>window.playLock=false,800);
       if(!window.selectedTMDB) return;
       hideModal(detailModal);
       if(window.selectedType === 'movie'){ window.selectedEpisode = null; await startStreamWithChecks(`${proxyBase}/hls/movie/${window.selectedId}`); return; }
@@ -747,7 +748,7 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
     }
 
     episodesCarousel.addEventListener('click', async ev=>{
-      if(window.playLock) return; window.lockPlay = true; setTimeout(()=>window.lockPlay=false,800);
+      if(window.playLock) return; window.playLock = true; setTimeout(()=>window.playLock=false,800);
       const card = ev.target.closest('.epSmall'); if(!card) return;
       const idx = parseInt(card.dataset.index,10); if(isNaN(idx)) return;
       window.selectedEpisode = window.episodes[idx];
