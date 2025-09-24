@@ -1,23 +1,21 @@
 /**
- * index.js - VixStream proxy consolidato
- * Base URL proxy: https://vixstreamproxy.onrender.com
- *
- * Note: ES module entry (use node >= 14 with "type": "module" in package.json)
+ * index.js - VixStream proxy consolidato (fix HLS)
+ * Node >= 14 with "type": "module" in package.json
  */
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
 import express from 'express';
 import fetch from 'node-fetch';
 import https from 'https';
 import http from 'http';
 import axios from 'axios';
 import puppeteer from 'puppeteer';
+import zlib from 'zlib';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -32,8 +30,6 @@ axios.defaults.timeout = 30000;
 // -----------------------------
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Serve static public (watch.html etc.)
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Global CORS (open)
@@ -60,19 +56,15 @@ function forceHttps(url) {
 }
 
 function getProxyUrl(originalUrl, currentReq = null) {
-  // Use vixstreamproxy base
-  const base = process.env.PROXY_BASE || 'https://vixstreamproxy.onrender.com';
-  // keep streamId if present in query already
+  const base = process.env.PROXY_BASE || `https://vixstreamproxy.onrender.com`;
   try {
-    if (originalUrl && originalUrl.includes('streamId=')) {
-      return `${base}/stream?url=${encodeURIComponent(originalUrl)}`;
+    // if original already proxied, return as-is
+    if (originalUrl && originalUrl.includes('/stream?url=')) {
+      return originalUrl;
     }
   } catch (e) {}
-
   let streamId = 'default';
-  if (currentReq && currentReq.query && currentReq.query.streamId) {
-    streamId = currentReq.query.streamId;
-  }
+  if (currentReq && currentReq.query && currentReq.query.streamId) streamId = currentReq.query.streamId;
   return `${base}/stream?url=${encodeURIComponent(originalUrl)}&streamId=${encodeURIComponent(streamId)}`;
 }
 
@@ -83,21 +75,26 @@ async function vixsrcPlaylist(tmdbId, season, episode) {
   const url = (episode != null)
     ? `https://vixsrc.to/tv/${tmdbId}/${season}/${episode}/?lang=it`
     : `https://vixsrc.to/movie/${tmdbId}?lang=it`;
-  const resp = await axios.get(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://vixsrc.to' },
-    timeout: 15000
-  });
-  const txt = resp.data;
-  const m = /token': '(.+)',\s*'expires': '(.+)',[\s\S]+?url: '(.+?)',[\s\S]+?window.canPlayFHD = (false|true)/.exec(txt);
-  if (!m) return null;
-  const [, token, expires, raw, canFHD] = m;
-  const playlist = new URL(raw);
-  const b = playlist.searchParams.get('b');
-  playlist.searchParams.set('token', token);
-  playlist.searchParams.set('expires', expires);
-  if (b != null) playlist.searchParams.set('b', b);
-  if (canFHD === 'true') playlist.searchParams.set('h', '1');
-  return playlist.toString();
+  try {
+    const resp = await axios.get(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://vixsrc.to' },
+      timeout: 15000
+    });
+    const txt = resp.data;
+    const m = /token': '(.+)',\s*'expires': '(.+)',[\s\S]+?url: '(.+?)',[\s\S]+?window.canPlayFHD = (false|true)/.exec(txt);
+    if (!m) return null;
+    const [, token, expires, raw, canFHD] = m;
+    const playlist = new URL(raw);
+    const b = playlist.searchParams.get('b');
+    playlist.searchParams.set('token', token);
+    playlist.searchParams.set('expires', expires);
+    if (b != null) playlist.searchParams.set('b', b);
+    if (canFHD === 'true') playlist.searchParams.set('h', '1');
+    return playlist.toString();
+  } catch (err) {
+    console.error('vixsrcPlaylist error:', err && err.message);
+    return null;
+  }
 }
 
 // -----------------------------
@@ -118,7 +115,7 @@ async function extractWithPuppeteer(url) {
       req.continue().catch(()=>{});
     });
     await page.goto(url, { timeout: 60000, waitUntil: 'networkidle2' });
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(3000);
   } catch (e) {
     // ignore
   } finally {
@@ -136,7 +133,6 @@ async function resolveStreamUrl(maybeUrl) {
     if (/\.(m3u8)$/i.test(u) || u.toLowerCase().includes('playlist') || u.toLowerCase().includes('/hls/')) {
       return u;
     }
-
     try {
       const r = await fetch(forceHttps(u), {
         headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://vixsrc.to' },
@@ -155,7 +151,6 @@ async function resolveStreamUrl(maybeUrl) {
     } catch (e) {
       // fall through to puppeteer
     }
-
     const pl = await extractWithPuppeteer(u);
     if (pl) return pl;
   } catch (e) {
@@ -218,7 +213,7 @@ app.get('/hls/movie/:id', async (req, res) => {
     res.json({
       title: meta.title,
       url: getProxyUrl(pl, req),
-      canFHD: pl.includes('h=1'),
+      canFHD: (pl || '').includes('h=1'),
       poster,
       qualities,
       audioTracks,
@@ -260,7 +255,7 @@ app.get('/hls/show/:id/:season/:episode', async (req, res) => {
     res.json({
       title: meta.name,
       url: getProxyUrl(pl, req),
-      canFHD: pl.includes('h=1'),
+      canFHD: (pl || '').includes('h=1'),
       poster,
       qualities,
       audioTracks,
@@ -287,7 +282,6 @@ app.get('/proxy/movie/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const playlistUrl = await vixsrcPlaylist(id);
-    // Optionally log content view in background
     const ip = req.headers['cf-connecting-ip'] || (req.headers['x-forwarded-for'] ? req.headers['x-forwarded-for'].split(',')[0].trim() : null) || req.connection.remoteAddress;
     logContentView(ip, 'movie', id).catch(()=>{});
     res.json({ url: getProxyUrl(playlistUrl, req) });
@@ -311,14 +305,11 @@ app.get('/proxy/series/:id/:season/:episode', async (req, res) => {
 });
 
 // -----------------------------
-// Stream handlers
-// - /proxy/stream  (advanced with streamId & abort control)
-// - /stream        (universal single endpoint)
+// /proxy/stream - advanced
 // -----------------------------
 const activeStreams = new Map();
 const PENDING_REQUESTS = new Map();
 
-// /proxy/stream - advanced
 app.get('/proxy/stream', async (req, res) => {
   const targetUrl = req.query.url;
   const streamId = req.query.streamId;
@@ -351,23 +342,27 @@ app.get('/proxy/stream', async (req, res) => {
       timeout: 15000
     });
 
-    if (targetUrl.includes('.m3u8')) {
+    if (targetUrl.includes('.m3u8') || (response.headers.get('content-type') || '').includes('application/vnd.apple.mpegurl')) {
       let text = await response.text();
       const baseUrl = targetUrl.split('/').slice(0, -1).join('/');
 
       const rewritten = text
         .replace(/URI="([^"]+)"/g, (m, uri) => {
           const absoluteUrl = uri.startsWith('http') ? uri : uri.startsWith('/') ? `https://vixsrc.to${uri}` : `${baseUrl}/${uri}`;
-          return `URI="${getProxyUrl(absoluteUrl)}"`;
+          return `URI="${getProxyUrl(absoluteUrl, req)}"`;
         })
-        .replace(/^([^\s#"][^\n\r"]+\.(ts|key|m3u8))$/gm, (m, file) => `${getProxyUrl(`${baseUrl}/${file}`)}`)
-        .replace(/(https?:\/\/[^\s\n"]+)/g, m => getProxyUrl(m));
+        .replace(/^([^\s#"][^\n\r"]+\.(ts|key|m3u8|vtt))$/gim, (m) => {
+          const trimmed = m.trim();
+          const full = trimmed.startsWith('http') ? trimmed : `${baseUrl}/${trimmed}`;
+          return getProxyUrl(full, req);
+        })
+        .replace(/(https?:\/\/[^\s\n"]+)/g, m => getProxyUrl(m, req));
 
-      if (!responded) {
-        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        res.send(rewritten);
-        responded = true;
-      }
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Length,Content-Type');
+      res.send(rewritten);
+      responded = true;
     } else {
       try {
         const urlObj = new URL(targetUrl);
@@ -410,7 +405,6 @@ app.get('/proxy/stream', async (req, res) => {
     }
   } catch (err) {
     if (err.name === 'AbortError') {
-      // aborted by client
       return;
     } else {
       console.error(`Errore proxy stream ${streamId}:`, err && err.message);
@@ -419,7 +413,9 @@ app.get('/proxy/stream', async (req, res) => {
   }
 });
 
-// /stream - universal
+// -----------------------------
+// /stream - universal (fix HLS rewriting)
+// -----------------------------
 app.get('/stream', async (req, res) => {
   const targetRaw = req.query.url;
   if (!targetRaw) return res.status(400).send('Missing url');
@@ -448,25 +444,28 @@ app.get('/stream', async (req, res) => {
       if (!pr.ok) return sendErr(502, 'Origin returned non-200 for playlist');
 
       let txt = await pr.text();
-      const urlObj = new URL(target);
-      const base = urlObj.origin + target.substring(0, target.lastIndexOf('/'));
+      // compute base as the target without trailing filename
+      const base = target.substring(0, target.lastIndexOf('/'));
 
+      // rewrite URIs and bare lines to proxy through /stream (preserve streamId)
       txt = txt
         .replace(/URI="([^"]+)"/g, (_, u) => {
           const abs = u.startsWith('http') ? u : u.startsWith('/') ? `https://vixsrc.to${u}` : `${base}/${u}`;
-          return `URI="${getProxyUrl(abs)}"`;
+          return `URI="${getProxyUrl(abs, req)}"`;
         })
-        .replace(/^([^#\r\n].+\.(ts|key|vtt))$/gim, m => {
+        .replace(/^([^#\r\n].+\.(ts|key|vtt|m3u8))$/gim, m => {
           const trimmed = m.trim();
           const abs = trimmed.startsWith('http') ? trimmed : `${base}/${trimmed}`;
-          return getProxyUrl(abs);
+          return getProxyUrl(abs, req);
         })
         .replace(/^(https?:\/\/[^\r\n]+)$/gim, m => {
           const trimmed = m.trim();
-          return getProxyUrl(trimmed);
+          return getProxyUrl(trimmed, req);
         });
 
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Length,Content-Type');
       res.send(txt);
       done = true;
     } catch (err) {
@@ -513,7 +512,7 @@ app.get('/stream', async (req, res) => {
 });
 
 // -----------------------------
-// Visitor & Content Logging
+// Visitor & Content Logging (already present above)
 // -----------------------------
 const dailyVisitors = {
   date: new Date().toDateString(),
@@ -617,7 +616,9 @@ function loadExistingContentData() {
 }
 loadExistingContentData();
 
+// -----------------------------
 // Admin endpoints for content views / stats
+// -----------------------------
 app.get('/admin/content-views', (req, res) => {
   const today = new Date().toDateString();
   if (dailyContentViews.date !== today) {
@@ -634,6 +635,9 @@ app.get('/admin/content-views', (req, res) => {
   });
 });
 
+// -----------------------------
+// Admin stats endpoint + visitor middleware + reports
+// -----------------------------
 app.get('/admin/content-stats', (req, res) => {
   const contentStats = new Map();
   dailyContentViews.views.forEach(views => {
@@ -750,234 +754,7 @@ function loadExistingData() {
 }
 loadExistingData();
 
-app.get('/admin/visitors/by-country', (req, res) => {
-  const byCountry = {};
-  dailyVisitors.visitors.forEach(visitor => {
-    byCountry[visitor.country] = (byCountry[visitor.country] || 0) + 1;
-  });
-  res.json(byCountry);
-});
-
 // Protect admin endpoints with simple header token (optional)
 app.use('/admin', (req, res, next) => {
-  const auth = req.headers.authorization;
-  if (!auth || auth !== process.env.ADMIN_TOKEN && auth !== 'mason00') {
-    return res.status(401).send('Accesso non autorizzato');
-  }
-  next();
-});
-
-// -----------------------------
-// Watch progress (save/load)
-// -----------------------------
-const watchProgress = { data: new Map(), lastSave: Date.now() };
-
-function saveWatchProgress() {
-  const progressData = { timestamp: new Date().toISOString(), progress: Array.from(watchProgress.data.entries()) };
-  const progressDir = path.join(__dirname, 'progress-data');
-  if (!fs.existsSync(progressDir)) fs.mkdirSync(progressDir);
-  const filename = path.join(progressDir, `progress-${Date.now()}.json`);
-  fs.writeFileSync(filename, JSON.stringify(progressData, null, 2));
-  watchProgress.lastSave = Date.now();
-}
-
-function loadExistingProgress() {
-  const progressDir = path.join(__dirname, 'progress-data');
-  if (!fs.existsSync(progressDir)) return;
-  const files = fs.readdirSync(progressDir).sort().reverse().slice(0, 5);
-  files.forEach(file => {
-    try {
-      const data = JSON.parse(fs.readFileSync(path.join(progressDir, file)));
-      data.progress.forEach(([key, progressData]) => {
-        watchProgress.data.set(key, progressData);
-      });
-      console.log(`Caricati ${data.progress.length} progressi da ${file}`);
-    } catch (err) {
-      console.error('Errore caricamento progressi:', err);
-    }
-  });
-}
-loadExistingProgress();
-setInterval(() => { if (watchProgress.data.size > 0) saveWatchProgress(); }, 5 * 60 * 1000);
-
-// Endpoints for progress
-app.post('/progress/save', express.json(), (req, res) => {
-  try {
-    const { ip, tmdbId, contentType, season, episode, currentTime, duration, title } = req.body;
-    if (!ip || !tmdbId || !contentType || currentTime == null || duration == null) {
-      return res.status(400).json({ error: 'Parametri mancanti' });
-    }
-    const progressKey = `${ip}-${tmdbId}-${contentType}-${season || 0}-${episode || 0}`;
-    const progressPercentage = (parseFloat(currentTime) / parseFloat(duration)) * 100;
-    if (progressPercentage >= 5 && progressPercentage <= 91) {
-      watchProgress.data.set(progressKey, {
-        ip,
-        tmdbId: parseInt(tmdbId),
-        contentType,
-        season: season ? parseInt(season) : null,
-        episode: episode ? parseInt(episode) : null,
-        currentTime: parseFloat(currentTime),
-        duration: parseFloat(duration),
-        progressPercentage: Math.round(progressPercentage),
-        title: title || 'Senza titolo',
-        lastUpdated: new Date().toISOString()
-      });
-    } else if (progressPercentage > 91) {
-      watchProgress.data.delete(progressKey);
-      console.log(`Contenuto completato: ${progressKey}`);
-    }
-    res.json({ success: true });
-  } catch (err) {
-    console.error('Errore salvataggio progresso:', err && err.message);
-    res.status(500).json({ error: 'Errore interno' });
-  }
-});
-
-app.get('/progress/:ip', (req, res) => {
-  try {
-    const { ip } = req.params;
-    const userProgress = [];
-    watchProgress.data.forEach((value, key) => {
-      if (key.startsWith(`${ip}-`)) userProgress.push({ ...value, id: key });
-    });
-    userProgress.sort((a, b) => new Date(b.lastUpdated) - new Date(a.lastUpdated));
-    res.json({ progress: userProgress });
-  } catch (err) {
-    console.error('Errore recupero progressi:', err && err.message);
-    res.status(500).json({ error: 'Errore interno' });
-  }
-});
-
-app.delete('/progress/:key', (req, res) => {
-  try {
-    const { key } = req.params;
-    const deleted = watchProgress.data.delete(key);
-    res.json({ success: deleted });
-  } catch (err) {
-    console.error('Errore rimozione progresso:', err && err.message);
-    res.status(500).json({ error: 'Errore interno' });
-  }
-});
-
-// -----------------------------
-// Home endpoints: available + trending
-// -----------------------------
-const vixCache = { movie: { data: null, lastFetch: 0 }, tv: { data: null, lastFetch: 0 } };
-
-async function fetchVixDatabase(type) {
-  if (vixCache[type].data && Date.now() - vixCache[type].lastFetch < 86400000) return vixCache[type].data;
-  try {
-    const response = await axios.get(`https://vixsrc.to/api/list/${type}?lang=it`, {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://vixsrc.to' }
-    });
-    vixCache[type] = { data: response.data || [], lastFetch: Date.now() };
-    return vixCache[type].data;
-  } catch (err) {
-    console.error(`Errore caricamento database VixSRC (${type}):`, err && err.message);
-    return vixCache[type].data || [];
-  }
-}
-
-app.get('/home/available', async (req, res) => {
-  try {
-    const [moviesRes, tvRes] = await Promise.all([
-      axios.get('https://vixsrc.to/api/list/movie?lang=it', { headers: { 'Referer': 'https://vixsrc.to', 'User-Agent': 'Mozilla/5.0' } }),
-      axios.get('https://vixsrc.to/api/list/tv?lang=it', { headers: { 'Referer': 'https://vixsrc.to', 'User-Agent': 'Mozilla/5.0' } })
-    ]);
-    res.json({ movies: moviesRes.data || [], tv: tvRes.data || [], lastUpdated: new Date().toISOString() });
-  } catch (err) {
-    console.error('Errore /home/available:', err && err.message);
-    res.status(500).json({ error: 'Errore contenuti disponibili' });
-  }
-});
-
-app.get('/home/trending', async (req, res) => {
-  try {
-    const [rawMovies, rawTV] = await Promise.all([ fetchVixDatabase('movie'), fetchVixDatabase('tv') ]);
-    const vixMovieIds = new Set(rawMovies.map(e => e.tmdb_id));
-    const vixTVIds = new Set(rawTV.map(e => e.tmdb_id));
-    const [moviesRes, tvRes] = await Promise.all([
-      axios.get(`https://api.themoviedb.org/3/trending/movie/day?language=it-IT&api_key=${TMDB_API_KEY}`),
-      axios.get(`https://api.themoviedb.org/3/trending/tv/day?language=it-IT&api_key=${TMDB_API_KEY}`)
-    ]);
-    const movies = (moviesRes.data.results || []).filter(m => vixMovieIds.has(m.id));
-    const tv = (tvRes.data.results || []).filter(s => vixTVIds.has(s.id));
-    res.json({ movies, tv });
-  } catch (err) {
-    console.error('Errore /home/trending:', err && err.message);
-    res.status(500).json({ error: 'Errore trending' });
-  }
-});
-
-// -----------------------------
-// Misc endpoints: watch page and root
-// -----------------------------
-app.get('/watch/:type/:id/:season?/:episode?', (req, res) => {
-  const watchPath = path.join(__dirname, 'public', 'watch.html');
-  if (!fs.existsSync(watchPath)) return res.status(500).send('Missing public/watch.html. Place your client HTML into public/watch.html');
-  res.sendFile(watchPath);
-});
-
-app.get('/', (req, res) => res.send('<h1>Proxy attivo</h1>'));
-
-// -----------------------------
-// Global error handling & process handlers
-// -----------------------------
-app.use((err, req, res, next) => {
-  console.error('Errore globale:', err && err.message);
-  if (!res.headersSent) res.status(500).json({ error: 'Errore interno del server' });
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection:', reason);
-});
-process.on('uncaughtException', (err) => {
-  if (err && err.code === 'ECONNRESET') {
-    console.log('Connessione client interrotta (uncaught)');
-  } else {
-    console.error('Uncaught Exception:', err && err.message);
-    // do not exit immediately; allow restart logic to handle if needed
-  }
-});
-process.on('warning', (warning) => {
-  console.warn('Node Warning:', warning.name, warning.message);
-});
-
-// -----------------------------
-// Server start with restart attempts
-// -----------------------------
-const MAX_RESTARTS = 5;
-let restarts = 0;
-
-function startServer() {
-  const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🎬 VixStream proxy in ascolto su http://0.0.0.0:${PORT}`);
-    restarts = 0;
-  });
-
-  server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`Porta ${PORT} già in uso`);
-    } else if (err.code === 'ECONNRESET') {
-      console.warn('Connessione resettata dal client');
-    } else {
-      console.error('Errore del server:', err && err.message);
-    }
-    if (restarts < MAX_RESTARTS) {
-      restarts++;
-      console.log(`Riavvio tentativo ${restarts}/${MAX_RESTARTS}...`);
-      setTimeout(startServer, 3000);
-    }
-  });
-
-  // graceful shutdown on SIGINT
-  process.on('SIGINT', () => {
-    console.log('\n🛑 Arresto del server...');
-    try { saveDailyReport(); } catch(e){}
-    try { saveContentViewsReport(); } catch(e){}
-    try { saveWatchProgress(); } catch(e){}
-    process.exit();
-  });
-}
-
-startServer();
+  const auth =
+```[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/jjaburke91/figurefigure/tree/8f023cd435a91bae9d459432c8c9ce39f57afc11/server%2Fconfig%2Fexpress.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "1")[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/jakobwarrer/epad/tree/fbb63065d1ef8de780b27b235543e5e9e76dac4b/server%2Fconfig%2Fexpress.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "2")[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/evgeniyPP/kino-score/tree/e3cfa77e8df62df3b7a25a8366b6819573c0ee68/functions%2Findex.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "3")[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/newtykins/now-scrobbling/tree/7832777cb81451cd47accc83d19ebe3001464969/allowCors.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "4")
