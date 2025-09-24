@@ -13,7 +13,7 @@ const IMAGE_BASE   = "https://image.tmdb.org/t/p";
 
 app.use(express.json());
 
-// CORS semplice per tutte le route (puoi restringere se vuoi)
+// CORS semplice per tutte le route
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -27,7 +27,6 @@ function forceHttps(url) {
   try {
     if (!url) return url;
     if (typeof url !== "string") return url;
-    // lasciare blob:, data: e già https
     if (url.startsWith("https://") || url.startsWith("blob:") || url.startsWith("data:")) return url;
     if (url.startsWith("http://")) return url.replace(/^http:\/\//, "https://");
     return url;
@@ -36,13 +35,13 @@ function forceHttps(url) {
   }
 }
 
-// Restituisce l'URL del proxy pubblico con target normalizzato
+// Restituisce l'URL pubblico del proxy per lo streaming, con target già normalizzato in HTTPS
 function getProxyUrl(originalUrl) {
   const safe = forceHttps(originalUrl);
   return `https://vixstreamproxy.onrender.com/stream?url=${encodeURIComponent(safe)}`;
 }
 
-// Estrae la playlist da vixsrc (movie o episode) usando la stessa logica che avevi
+// Estrae playlist da vixsrc (movie o episode)
 async function vixsrcPlaylist(tmdbId, season, episode) {
   const url = episode != null
     ? `https://vixsrc.to/tv/${tmdbId}/${season}/${episode}/?lang=it`
@@ -208,11 +207,9 @@ app.get("/hls/show/:id/:season/:episode", async (req, res) => {
 async function resolveStreamUrl(maybeUrl) {
   try {
     const u = String(maybeUrl);
-    // se già contiene m3u8 o playlist o /hls/ consideralo probabile playlist
     if (/\.(m3u8)$/i.test(u) || u.toLowerCase().includes("playlist") || u.toLowerCase().includes("/hls/")) {
       return u;
     }
-    // prova a chiamare direttamente: potrebbe rispondere con JSON che contiene "url"
     try {
       const r = await fetch(forceHttps(u), { headers:{ "User-Agent":"Mozilla/5.0", "Referer":"https://vixsrc.to" }, timeout:10000 });
       const ct = r.headers.get("content-type") || "";
@@ -220,7 +217,6 @@ async function resolveStreamUrl(maybeUrl) {
         const j = await r.json().catch(()=>null);
         if (j && j.url) return j.url;
       }
-      // se la risposta è testo e contiene .m3u8
       const txt = await r.text().catch(()=>null);
       if (typeof txt === "string" && txt.includes(".m3u8")) {
         const m = txt.match(/https?:\/\/[^\s'"]+\.m3u8[^\s'"]*/);
@@ -229,7 +225,6 @@ async function resolveStreamUrl(maybeUrl) {
     } catch (e) {
       // ignore e proviamo puppeteer sotto
     }
-    // fallback: estrarre con puppeteer (pagina dinamica)
     const pl = await extractWithPuppeteer(u);
     if (pl) return pl;
   } catch (e) {
@@ -239,18 +234,15 @@ async function resolveStreamUrl(maybeUrl) {
 }
 
 // ── Endpoint /stream ──────────────────────────────────────────────────────────
-// Serve sia playlist m3u8 (riscritto) sia passthrough per segmenti/media
 app.get("/stream", async (req, res) => {
   const targetRaw = req.query.url;
   if (!targetRaw) return res.status(400).send("Missing url");
 
-  // target decodificato e normalizzato
   const decoded = decodeURIComponent(targetRaw);
   const resolved = await resolveStreamUrl(decoded) || decoded;
   const target = forceHttps(resolved);
   const lower = String(target).toLowerCase();
 
-  // consideriamo playlist anche url con /hls/ o playlist o estensione .m3u8
   const isM3U8 = /\.m3u8$/i.test(lower) || lower.includes("playlist") || lower.includes("/hls/");
 
   let done = false;
@@ -258,7 +250,7 @@ app.get("/stream", async (req, res) => {
     if (!done) { done = true; res.status(st).send(msg); }
   };
 
-  // header già impostati globalmente, ma per sicurezza:
+  // header di sicurezza/CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Range");
@@ -272,11 +264,9 @@ app.get("/stream", async (req, res) => {
       if (!pr.ok) return sendErr(502, "Origin returned non-200 for playlist");
 
       let txt = await pr.text();
-      // base directory della playlist
       const urlObj = new URL(target);
       const base = urlObj.origin + target.substring(0, target.lastIndexOf("/"));
 
-      // Replace URI="..." (chiavi o altre URI)
       txt = txt
         .replace(/URI="([^"]+)"/g, (_, u) => {
           const abs = u.startsWith("http")
@@ -286,7 +276,6 @@ app.get("/stream", async (req, res) => {
               : `${base}/${u}`;
           return `URI="${getProxyUrl(abs)}"`;
         })
-        // Replace relative segment/key/vtt lines with proxy links
         .replace(/^([^#\r\n].+\.(ts|key|vtt))$/gim, m => {
           const trimmed = m.trim();
           const abs = trimmed.startsWith("http") ? trimmed : `${base}/${trimmed}`;
@@ -314,9 +303,7 @@ app.get("/stream", async (req, res) => {
         timeout: 10000
       };
       const proxyReq = client.get(target, options, proxyRes => {
-        // assicurati che il browser riceva CORS
         proxyRes.headers['access-control-allow-origin'] = '*';
-        // forward headers (attenzione a hop-by-hop headers)
         const headers = { ...proxyRes.headers };
         res.writeHead(proxyRes.statusCode || 200, headers);
         proxyRes.pipe(res);
@@ -341,7 +328,7 @@ app.get("/stream", async (req, res) => {
   }
 });
 
-// ── Player di debug /watch (unchanged, utile per test) ───────────────────────
+// ── Player di debug /watch ───────────────────────────────────────────────────
 app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
   const { type, id, season, episode } = req.params;
   const apiPath = type === "movie"
@@ -377,7 +364,7 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
             ${data.nextEpisode ? `<button onclick="location.href='${data.nextEpisode}'">➡ Successivo</button>` : ""}
           </div>
 
-          <video id="video" controls poster="${data.poster}"></video>
+          <video id="video" controls poster="${data.poster}" crossorigin="anonymous" playsinline></video>
 
           <div id="controls">
             <select id="qualitySelect">
@@ -403,29 +390,48 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
 
         <script>
           const video = document.getElementById("video");
-          const hls = new Hls();
-          hls.loadSource("${data.url}");
-          hls.attachMedia(video);
+          const proxyUrl = "${data.url}";
 
-          hls.on(Hls.Events.MANIFEST_PARSED, () => {
-            document.getElementById("qualitySelect").onchange();
-          });
+          if (Hls && Hls.isSupported()) {
+            const hls = new Hls({ debug: true });
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(proxyUrl));
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+              document.getElementById("qualitySelect").onchange();
+            });
+            hls.on(Hls.Events.ERROR, (event, data) => {
+              console.error("HLS error", event, data);
+              if (data && data.fatal) {
+                // log fatale
+                console.error("Hls.js fatal error:", data);
+              }
+            });
+            hls.on(Hls.Events.LEVEL_LOADED, (_, d) => console.log("LEVEL_LOADED", d));
+            hls.on(Hls.Events.FRAG_LOADED, (_, d) => console.log("FRAG_LOADED", d));
+            window._hls = hls;
+          } else {
+            // fallback nativo (unlikely su Brave/Chrome)
+            video.src = proxyUrl;
+          }
 
           document.getElementById("qualitySelect").onchange = function(){
             const h = parseInt(this.value,10);
-            if(h === -1) hls.currentLevel = -1;
+            if (!window._hls) return;
+            if(h === -1) window._hls.currentLevel = -1;
             else {
-              const idx = hls.levels.findIndex(l => l.height === h);
-              hls.currentLevel = idx;
+              const idx = window._hls.levels.findIndex(l => l.height === h);
+              window._hls.currentLevel = idx;
             }
           };
 
           document.getElementById("audioSelect").onchange = function(){
-            hls.audioTrack = parseInt(this.value,10);
+            if (!window._hls) return;
+            window._hls.audioTrack = parseInt(this.value,10);
           };
 
           document.getElementById("subtitleSelect").onchange = function(){
-            hls.subtitleTrack = parseInt(this.value,10);
+            if (!window._hls) return;
+            window._hls.subtitleTrack = parseInt(this.value,10);
           };
 
           function skipIntro(){
