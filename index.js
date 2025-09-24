@@ -756,5 +756,114 @@ loadExistingData();
 
 // Protect admin endpoints with simple header token (optional)
 app.use('/admin', (req, res, next) => {
-  const auth =
-```[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/jjaburke91/figurefigure/tree/8f023cd435a91bae9d459432c8c9ce39f57afc11/server%2Fconfig%2Fexpress.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "1")[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/jakobwarrer/epad/tree/fbb63065d1ef8de780b27b235543e5e9e76dac4b/server%2Fconfig%2Fexpress.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "2")[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/evgeniyPP/kino-score/tree/e3cfa77e8df62df3b7a25a8366b6819573c0ee68/functions%2Findex.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "3")[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/newtykins/now-scrobbling/tree/7832777cb81451cd47accc83d19ebe3001464969/allowCors.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "4")
+  const auth = req.headers.authorization;
+  const token = process.env.ADMIN_TOKEN || 'mason00';
+  if (!auth || auth !== token) {
+    return res.status(401).send('Accesso non autorizzato');
+  }
+  next();
+});
+
+// -----------------------------
+// Graceful shutdown helpers
+// -----------------------------
+function safeCall(fn) {
+  try { fn(); } catch (e) { console.error('safeCall error:', e && e.message); }
+}
+
+// If not already defined earlier in the file, ensure these functions exist
+if (typeof saveContentViewsReport !== 'function') {
+  function saveContentViewsReport() {
+    if (dailyContentViews.views.size === 0) return;
+    const report = {
+      date: dailyContentViews.date,
+      totalViews: Array.from(dailyContentViews.views.values()).reduce((acc, views) => acc + views.length, 0),
+      uniqueViewers: dailyContentViews.views.size,
+      viewsByIP: Array.from(dailyContentViews.views.entries()).map(([ip, views]) => ({ ip, totalViews: views.length, content: views }))
+    };
+    const reportsDir = path.join(__dirname, 'content-reports');
+    if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir);
+    const filename = path.join(reportsDir, `content-${dailyContentViews.date.replace(/\s+/g, '-')}.json`);
+    fs.writeFileSync(filename, JSON.stringify(report, null, 2));
+    console.log(`Report contenuti salvato: ${filename}`);
+  }
+}
+
+if (typeof saveWatchProgress !== 'function') {
+  function saveWatchProgress() {
+    if (!watchProgress || !watchProgress.data) return;
+    const progressData = { timestamp: new Date().toISOString(), progress: Array.from(watchProgress.data.entries()) };
+    const progressDir = path.join(__dirname, 'progress-data');
+    if (!fs.existsSync(progressDir)) fs.mkdirSync(progressDir);
+    const filename = path.join(progressDir, `progress-${Date.now()}.json`);
+    fs.writeFileSync(filename, JSON.stringify(progressData, null, 2));
+    if (watchProgress) watchProgress.lastSave = Date.now();
+    console.log(`Progressi salvati: ${filename}`);
+  }
+}
+
+// -----------------------------
+// Server start with restart attempts
+// -----------------------------
+const MAX_RESTARTS = 5;
+let restarts = 0;
+let serverInstance = null;
+
+function startServer() {
+  serverInstance = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🎬 VixStream proxy in ascolto su http://0.0.0.0:${PORT}`);
+    restarts = 0;
+  });
+
+  serverInstance.on('error', (err) => {
+    console.error('Errore del server:', err && err.message);
+    if (restarts < MAX_RESTARTS) {
+      restarts++;
+      console.log(`[${new Date().toISOString()}] Riavvio tentativo ${restarts}/${MAX_RESTARTS}...`);
+      setTimeout(startServer, 3000);
+    } else {
+      console.error('Superato numero massimo di riavvii, esco.');
+      process.exit(1);
+    }
+  });
+
+  // If desired, handle client connection reset gracefully
+  serverInstance.on('clientError', (err, socket) => {
+    console.warn('Client error:', err && err.message);
+    try { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch(e){}
+  });
+}
+
+// Graceful shutdown handling
+function shutdownGracefully(code = 0) {
+  console.log(`\n🛑 Shutdown in corso (${new Date().toISOString()})...`);
+  safeCall(() => saveDailyReport && saveDailyReport());
+  safeCall(() => saveContentViewsReport && saveContentViewsReport());
+  safeCall(() => saveWatchProgress && saveWatchProgress());
+  try {
+    if (serverInstance) serverInstance.close(() => {
+      console.log('Server chiuso. Bye.');
+      process.exit(code);
+    });
+    // force exit if not closed in time
+    setTimeout(() => process.exit(code), 5000).unref();
+  } catch (e) {
+    console.error('Errore durante shutdown:', e && e.message);
+    process.exit(code);
+  }
+}
+
+process.on('SIGINT', () => shutdownGracefully(0));
+process.on('SIGTERM', () => shutdownGracefully(0));
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err && err.stack || err);
+  shutdownGracefully(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+});
+
+// start the server
+startServer();
+
+
