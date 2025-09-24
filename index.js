@@ -13,11 +13,21 @@ const IMAGE_BASE   = "https://image.tmdb.org/t/p";
 
 app.use(express.json());
 
-// Utility: normalizza un URL forzando https se possibile
+// CORS semplice per tutte le route (puoi restringere se vuoi)
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Range");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
+// Utility: forzare https dove sensato
 function forceHttps(url) {
   try {
     if (!url) return url;
-    // se è già https o blob o data, lascialo
+    if (typeof url !== "string") return url;
+    // lasciare blob:, data: e già https
     if (url.startsWith("https://") || url.startsWith("blob:") || url.startsWith("data:")) return url;
     if (url.startsWith("http://")) return url.replace(/^http:\/\//, "https://");
     return url;
@@ -26,13 +36,13 @@ function forceHttps(url) {
   }
 }
 
-// Restituisce l'URL pubblico del proxy per lo streaming, con target già normalizzato in HTTPS
+// Restituisce l'URL del proxy pubblico con target normalizzato
 function getProxyUrl(originalUrl) {
   const safe = forceHttps(originalUrl);
   return `https://vixstreamproxy.onrender.com/stream?url=${encodeURIComponent(safe)}`;
 }
 
-// Estrae playlist da vixsrc (movie o episode)
+// Estrae la playlist da vixsrc (movie o episode) usando la stessa logica che avevi
 async function vixsrcPlaylist(tmdbId, season, episode) {
   const url = episode != null
     ? `https://vixsrc.to/tv/${tmdbId}/${season}/${episode}/?lang=it`
@@ -54,27 +64,32 @@ async function vixsrcPlaylist(tmdbId, season, episode) {
   return playlist.toString();
 }
 
+// Estrattore con puppeteer (cattura richieste che contengono playlist)
 async function extractWithPuppeteer(url) {
   let pl = null;
-  const browser = await puppeteer.launch({ headless:true, args:["--no-sandbox","--disable-setuid-sandbox"] });
+  let browser = null;
   try {
+    browser = await puppeteer.launch({ headless:true, args:["--no-sandbox","--disable-setuid-sandbox"] });
     const page = await browser.newPage();
     await page.setRequestInterception(true);
     page.on("request", req => {
       const u = req.url();
-      if (!pl && u.includes("playlist") && u.includes("rendition=")) pl = u;
+      if (!pl && (u.includes("playlist") || u.endsWith(".m3u8") || u.includes("/hls/") || u.includes("rendition="))) {
+        pl = u;
+      }
       req.continue().catch(()=>{});
     });
     await page.goto(url, { timeout:60000, waitUntil: "networkidle2" });
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(7000);
   } catch (e) {
     // ignore
   } finally {
-    try{ await browser.close(); }catch(e){}
+    try{ if (browser) await browser.close(); } catch(e){}
   }
   return pl;
 }
 
+// Parse m3u8 per qualità, audio e sottotitoli
 async function parseTracks(m3u8Url) {
   try {
     const res = await fetch(forceHttps(m3u8Url), {
@@ -104,7 +119,7 @@ async function parseTracks(m3u8Url) {
   }
 }
 
-// Endpoint per movie
+// ── Endpoint /hls/movie/:id ───────────────────────────────────────────────────
 app.get("/hls/movie/:id", async (req, res) => {
   const tmdbId = req.params.id;
   try {
@@ -121,7 +136,6 @@ app.get("/hls/movie/:id", async (req, res) => {
     const poster = meta.poster_path ? `${IMAGE_BASE}/w300${meta.poster_path}` : null;
     const { qualities, audioTracks, subtitles } = await parseTracks(pl);
 
-    res.setHeader("Access-Control-Allow-Origin", "*");
     res.json({
       title: meta.title,
       url: getProxyUrl(pl),
@@ -143,7 +157,7 @@ app.get("/hls/movie/:id", async (req, res) => {
   }
 });
 
-// Endpoint per show/episodio
+// ── Endpoint /hls/show/:id/:season/:episode ──────────────────────────────────
 app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   const { id, season, episode } = req.params;
   try {
@@ -167,7 +181,6 @@ app.get("/hls/show/:id/:season/:episode", async (req, res) => {
       ? `/watch/show/${id}/${seasonNum}/${episodeNum - 1}`
       : null;
 
-    res.setHeader("Access-Control-Allow-Origin", "*");
     res.json({
       title: meta.name,
       url: getProxyUrl(pl),
@@ -191,20 +204,61 @@ app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   }
 });
 
-// Stream proxy: serve sia m3u8 (riscritto) che segmenti/key/vtt passthrough
+// Risolvitore generico: prova a ottenere la playlist finale se l'URL è una pagina o wrapper
+async function resolveStreamUrl(maybeUrl) {
+  try {
+    const u = String(maybeUrl);
+    // se già contiene m3u8 o playlist o /hls/ consideralo probabile playlist
+    if (/\.(m3u8)$/i.test(u) || u.toLowerCase().includes("playlist") || u.toLowerCase().includes("/hls/")) {
+      return u;
+    }
+    // prova a chiamare direttamente: potrebbe rispondere con JSON che contiene "url"
+    try {
+      const r = await fetch(forceHttps(u), { headers:{ "User-Agent":"Mozilla/5.0", "Referer":"https://vixsrc.to" }, timeout:10000 });
+      const ct = r.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        const j = await r.json().catch(()=>null);
+        if (j && j.url) return j.url;
+      }
+      // se la risposta è testo e contiene .m3u8
+      const txt = await r.text().catch(()=>null);
+      if (typeof txt === "string" && txt.includes(".m3u8")) {
+        const m = txt.match(/https?:\/\/[^\s'"]+\.m3u8[^\s'"]*/);
+        if (m) return m[0];
+      }
+    } catch (e) {
+      // ignore e proviamo puppeteer sotto
+    }
+    // fallback: estrarre con puppeteer (pagina dinamica)
+    const pl = await extractWithPuppeteer(u);
+    if (pl) return pl;
+  } catch (e) {
+    // ignore
+  }
+  return null;
+}
+
+// ── Endpoint /stream ──────────────────────────────────────────────────────────
+// Serve sia playlist m3u8 (riscritto) sia passthrough per segmenti/media
 app.get("/stream", async (req, res) => {
   const targetRaw = req.query.url;
   if (!targetRaw) return res.status(400).send("Missing url");
 
-  // Forza https sul target quando possibile
-  const target = forceHttps(decodeURIComponent(targetRaw));
-  const isM3U8 = String(target).toLowerCase().includes(".m3u8") || String(target).toLowerCase().includes("playlist");
+  // target decodificato e normalizzato
+  const decoded = decodeURIComponent(targetRaw);
+  const resolved = await resolveStreamUrl(decoded) || decoded;
+  const target = forceHttps(resolved);
+  const lower = String(target).toLowerCase();
+
+  // consideriamo playlist anche url con /hls/ o playlist o estensione .m3u8
+  const isM3U8 = /\.m3u8$/i.test(lower) || lower.includes("playlist") || lower.includes("/hls/");
+
   let done = false;
   const sendErr = (st, msg) => {
     if (!done) { done = true; res.status(st).send(msg); }
   };
 
-  // Allow CORS for all responses from this endpoint
+  // header già impostati globalmente, ma per sicurezza:
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Range");
@@ -218,11 +272,11 @@ app.get("/stream", async (req, res) => {
       if (!pr.ok) return sendErr(502, "Origin returned non-200 for playlist");
 
       let txt = await pr.text();
-      // base origin + path (directory containing the playlist)
+      // base directory della playlist
       const urlObj = new URL(target);
       const base = urlObj.origin + target.substring(0, target.lastIndexOf("/"));
 
-      // Replace URI="..." (keys or other absolute/relative URIs) with proxy links
+      // Replace URI="..." (chiavi o altre URI)
       txt = txt
         .replace(/URI="([^"]+)"/g, (_, u) => {
           const abs = u.startsWith("http")
@@ -232,9 +286,10 @@ app.get("/stream", async (req, res) => {
               : `${base}/${u}`;
           return `URI="${getProxyUrl(abs)}"`;
         })
-        // Replace lines that look like segment or key references (relative .ts/.key/.vtt)
+        // Replace relative segment/key/vtt lines with proxy links
         .replace(/^([^#\r\n].+\.(ts|key|vtt))$/gim, m => {
-          const abs = m.startsWith("http") ? m : `${base}/${m}`;
+          const trimmed = m.trim();
+          const abs = trimmed.startsWith("http") ? trimmed : `${base}/${trimmed}`;
           return getProxyUrl(abs);
         });
 
@@ -259,9 +314,9 @@ app.get("/stream", async (req, res) => {
         timeout: 10000
       };
       const proxyReq = client.get(target, options, proxyRes => {
-        // ensure CORS header present on proxied media responses
+        // assicurati che il browser riceva CORS
         proxyRes.headers['access-control-allow-origin'] = '*';
-        // forward content-type and other headers but protect hop-by-hop headers
+        // forward headers (attenzione a hop-by-hop headers)
         const headers = { ...proxyRes.headers };
         res.writeHead(proxyRes.statusCode || 200, headers);
         proxyRes.pipe(res);
@@ -286,7 +341,7 @@ app.get("/stream", async (req, res) => {
   }
 });
 
-// ─── Player di debug /watch ───────────────────────────────────────────────────
+// ── Player di debug /watch (unchanged, utile per test) ───────────────────────
 app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
   const { type, id, season, episode } = req.params;
   const apiPath = type === "movie"
