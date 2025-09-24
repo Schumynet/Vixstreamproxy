@@ -264,10 +264,16 @@ app.get("/stream", async (req, res) => {
       if (!pr.ok) return sendErr(502, "Origin returned non-200 for playlist");
 
       let txt = await pr.text();
+      // base directory della playlist
       const urlObj = new URL(target);
       const base = urlObj.origin + target.substring(0, target.lastIndexOf("/"));
 
+      // RISCRITTURA MIGLIORATA:
+      // 1) URI="..." -> proxy
+      // 2) righe .ts .key .vtt -> proxy
+      // 3) righe che sono URL assolute (variant playlists, renditions, ecc.) -> proxy
       txt = txt
+        // riscrive URI="..."
         .replace(/URI="([^"]+)"/g, (_, u) => {
           const abs = u.startsWith("http")
             ? u
@@ -276,10 +282,16 @@ app.get("/stream", async (req, res) => {
               : `${base}/${u}`;
           return `URI="${getProxyUrl(abs)}"`;
         })
+        // riscrive righe relative/assolute che finiscono con .ts .key .vtt
         .replace(/^([^#\r\n].+\.(ts|key|vtt))$/gim, m => {
           const trimmed = m.trim();
           const abs = trimmed.startsWith("http") ? trimmed : `${base}/${trimmed}`;
           return getProxyUrl(abs);
+        })
+        // riscrive qualsiasi riga che è un URL assoluto (variant playlists o altri endpoint)
+        .replace(/^(https?:\/\/[^\r\n]+)$/gim, m => {
+          const trimmed = m.trim();
+          return getProxyUrl(trimmed);
         });
 
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
@@ -402,7 +414,6 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
             hls.on(Hls.Events.ERROR, (event, data) => {
               console.error("HLS error", event, data);
               if (data && data.fatal) {
-                // log fatale
                 console.error("Hls.js fatal error:", data);
               }
             });
@@ -410,7 +421,6 @@ app.get("/watch/:type/:id/:season?/:episode?", async (req, res) => {
             hls.on(Hls.Events.FRAG_LOADED, (_, d) => console.log("FRAG_LOADED", d));
             window._hls = hls;
           } else {
-            // fallback nativo (unlikely su Brave/Chrome)
             video.src = proxyUrl;
           }
 
