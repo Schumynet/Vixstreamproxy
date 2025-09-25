@@ -1,14 +1,8 @@
-// index.js - VixStream proxy (fixed for Render)
-// - Serves static files from /public
-// - /hls/movie/:id and /hls/show/:id/:season/:episode metadata endpoints
-// - /stream?url=... proxy for m3u8 and media segments (rewrites playlist URIs)
-// - /config returns safe client-side config (no raw TMDB key exposed)
-// - /watch serves public/watch.html (static file, edit client there)
-//
-// Notes:
-// - Put your client HTML in public/watch.html
-// - Set TMDB_API_KEY and optionally PROXY_BASE in Render environment variables
-// - Puppeteer is optional: if unavailable, extractWithPuppeteer will simply return null
+// index.js - VixStream proxy (HTTPS-forced fixes)
+// - Forza PROXY_BASE a https
+// - getProxyUrl normalizza gli URL e usa PROXY_BASE https
+// - Riscrittura playlist che risolve relativi e forza https per ogni URL
+// - Puppeteer opzionale (se non installato, l'estrazione fallback ritorna null)
 
 const express = require("express");
 const axios = require("axios");
@@ -19,20 +13,21 @@ const path = require("path");
 const fs = require("fs");
 
 let puppeteer = null;
-try { puppeteer = require("puppeteer"); } catch (e) { /* optional */ }
+try { puppeteer = require("puppeteer"); } catch(e){ /* optional */ }
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const TMDB_API_KEY = process.env.TMDB_API_KEY || ""; // optional
-const PROXY_BASE = process.env.PROXY_BASE || `https://vixstreamproxy.onrender.com`;
+const TMDB_API_KEY = process.env.TMDB_API_KEY || "";
+// FORCE https for PROXY_BASE by replacing any http: with https:
+const PROXY_BASE = (process.env.PROXY_BASE || "https://vixstreamproxy.onrender.com").replace(/^http:/i, "https:");
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const IMAGE_BASE = "https://image.tmdb.org/t/p";
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// Basic CORS for endpoints used by client
+// Basic CORS
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -45,8 +40,13 @@ app.use((req, res, next) => {
 function forceHttps(url) {
   try {
     if (!url || typeof url !== "string") return url;
-    if (url.startsWith("https://") || url.startsWith("blob:") || url.startsWith("data:")) return url;
-    if (url.startsWith("http://")) return url.replace(/^http:\/\//, "https://");
+    // keep blob: and data: as-is
+    if (url.startsWith("blob:") || url.startsWith("data:")) return url;
+    // if already https, return
+    if (url.startsWith("https://")) return url;
+    // if http, convert to https
+    if (url.startsWith("http://")) return url.replace(/^http:\/\//i, "https://");
+    // otherwise return as-is
     return url;
   } catch (e) {
     return url;
@@ -55,22 +55,22 @@ function forceHttps(url) {
 
 function getProxyUrl(originalUrl) {
   const safe = forceHttps(originalUrl);
-  return `${PROXY_BASE}/stream?url=${encodeURIComponent(safe)}`;
+  const base = PROXY_BASE.replace(/^http:/i, "https:");
+  return `${base}/stream?url=${encodeURIComponent(safe)}`;
 }
 
-// Try to extract playlist from page HTML (simple regex)
+// Try to extract playlist tokens from page HTML (best-effort)
 async function vixsrcPlaylist(tmdbId, season, episode) {
   try {
     const url = episode != null
       ? `https://vixsrc.to/tv/${tmdbId}/${season}/${episode}/?lang=it`
       : `https://vixsrc.to/movie/${tmdbId}?lang=it`;
     const resp = await axios.get(url, {
-      headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://vixsrc.to" },
+      headers: { "User-Agent":"Mozilla/5.0", "Referer":"https://vixsrc.to" },
       timeout: 15000
     });
     const txt = resp.data || "";
-    // Look for token and base url (best-effort)
-    const m = /token':\s*'([^']+)'[\s\S]*?expires':\s*'([^']+)'[\s\S]*?url:\s*'([^']+)'[\s\S]*?window.canPlayFHD\s*=\s*(false|true)/.exec(txt);
+    const m = /token':\s*'([^']+)'.*?expires':\s*'([^']+)'.*?url:\s*'([^']+)'.*?window.canPlayFHD\s*=\s*(false|true)/s.exec(txt);
     if (!m) return null;
     const [, token, expires, raw, canFHD] = m;
     const playlist = new URL(raw);
@@ -85,7 +85,7 @@ async function vixsrcPlaylist(tmdbId, season, episode) {
   }
 }
 
-// Puppeteer fallback: intercept requests to find m3u8 (optional)
+// Puppeteer fallback (optional)
 async function extractWithPuppeteer(url) {
   if (!puppeteer) return null;
   let browser = null;
@@ -111,13 +111,9 @@ async function extractWithPuppeteer(url) {
   return found;
 }
 
-// Best-effort parse of a playlist to extract tracks info
 async function parseTracks(m3u8Url) {
   try {
-    const res = await fetch(forceHttps(m3u8Url), {
-      headers: { "Referer": "https://vixsrc.to", "User-Agent": "Mozilla/5.0" },
-      timeout: 10000
-    });
+    const res = await fetch(forceHttps(m3u8Url), { headers: { "Referer":"https://vixsrc.to", "User-Agent":"Mozilla/5.0" }, timeout: 10000 });
     if (!res.ok) return { qualities: [], audioTracks: [], subtitles: [] };
     const text = await res.text();
     const qualities = [], audioTracks = [], subtitles = [];
@@ -219,7 +215,7 @@ app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   }
 });
 
-// Try to resolve URL to a playable stream (m3u8) using several heuristics
+// Resolve wrapper to real stream URL
 async function resolveStreamUrl(maybeUrl) {
   try {
     const u = String(maybeUrl);
@@ -228,7 +224,7 @@ async function resolveStreamUrl(maybeUrl) {
     }
 
     try {
-      const r = await fetch(forceHttps(u), { headers: { "User-Agent": "Mozilla/5.0", "Referer":"https://vixsrc.to" }, timeout: 10000 });
+      const r = await fetch(forceHttps(u), { headers: { "User-Agent":"Mozilla/5.0", "Referer":"https://vixsrc.to" }, timeout: 10000 });
       const ct = r.headers.get("content-type") || "";
       if (ct.includes("application/json")) {
         const j = await r.json().catch(()=>null);
@@ -251,7 +247,7 @@ async function resolveStreamUrl(maybeUrl) {
   return null;
 }
 
-// Stream proxy endpoint - handles playlists and media requests
+// Stream proxy endpoint
 app.get("/stream", async (req, res) => {
   const targetRaw = req.query.url;
   if (!targetRaw) return res.status(400).send("Missing url");
@@ -277,27 +273,31 @@ app.get("/stream", async (req, res) => {
       if (!pr.ok) return sendErr(502, "Origin returned non-200 for playlist");
 
       let txt = await pr.text();
-      // base for relative resolution
+      // compute base and force https on origin
       let base = target;
       try {
         const uobj = new URL(target);
-        base = uobj.origin + target.substring(0, target.lastIndexOf("/"));
+        const originHttps = uobj.origin.replace(/^http:/i, "https:");
+        base = originHttps + target.substring(0, target.lastIndexOf("/"));
       } catch (e) { /* ignore */ }
 
-      // rewrite URIs and absolute segment lines to proxy them through /stream
+      // rewrite URIs forcing https and proxying through getProxyUrl
       txt = txt
         .replace(/URI="([^"]+)"/g, (_, u) => {
-          const abs = u.startsWith("http") ? u : u.startsWith("/") ? `https://vixsrc.to${u}` : `${base}/${u}`;
+          const resolvedRel = u.startsWith("http") ? u : u.startsWith("/") ? `https://vixsrc.to${u}` : `${base}/${u}`;
+          const abs = forceHttps(resolvedRel);
           return `URI="${getProxyUrl(abs)}"`;
         })
         .replace(/^([^#\r\n].+\.(ts|key|vtt))$/gim, m => {
           const trimmed = m.trim();
-          const abs = trimmed.startsWith("http") ? trimmed : `${base}/${trimmed}`;
+          const resolvedRel = trimmed.startsWith("http") ? trimmed : `${base}/${trimmed}`;
+          const abs = forceHttps(resolvedRel);
           return getProxyUrl(abs);
         })
         .replace(/^(https?:\/\/[^\r\n]+)$/gim, m => {
           const trimmed = m.trim();
-          return getProxyUrl(trimmed);
+          const abs = forceHttps(trimmed);
+          return getProxyUrl(abs);
         });
 
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
@@ -308,16 +308,16 @@ app.get("/stream", async (req, res) => {
       sendErr(500, "Errore proxy m3u8");
     }
   } else {
-    // proxy media (ts, key, mp4, etc.) with streaming
+    // proxy media
     try {
       const uObj = new URL(target);
       const client = uObj.protocol === "https:" ? https : http;
       const options = {
         headers: {
-          "Referer": "https://vixsrc.to",
-          "User-Agent": "Mozilla/5.0",
-          "Accept": "*/*",
-          "Connection": "keep-alive"
+          "Referer":"https://vixsrc.to",
+          "User-Agent":"Mozilla/5.0",
+          "Accept":"*/*",
+          "Connection":"keep-alive"
         },
         timeout: 15000
       };
@@ -347,7 +347,7 @@ app.get("/stream", async (req, res) => {
   }
 });
 
-// Lightweight /config endpoint (no sensitive data)
+// /config endpoint
 app.get("/config", (req, res) => {
   res.json({
     proxyBase: PROXY_BASE,
@@ -355,16 +355,15 @@ app.get("/config", (req, res) => {
   });
 });
 
-// Serve watch.html (client) as static file
+// Serve watch.html static
 app.get("/watch/:type/:id/:season?/:episode?", (req, res) => {
   const watchPath = path.join(__dirname, "public", "watch.html");
   if (!fs.existsSync(watchPath)) {
-    return res.status(500).send("Missing public/watch.html. Put your client HTML in public/watch.html");
+    return res.status(500).send("Missing public/watch.html. Put your client HTML there");
   }
   res.sendFile(watchPath);
 });
 
-// Start server
 app.listen(PORT, () => {
   console.log(`🎬 VixStream proxy running on http://0.0.0.0:${PORT} (PROXY_BASE=${PROXY_BASE})`);
 });
