@@ -1,28 +1,30 @@
-// index.js - VixStream proxy adapted for Render
+// index.js - VixStream proxy (fixed for Render)
 // - Serves static files from /public
 // - /hls/movie/:id and /hls/show/:id/:season/:episode metadata endpoints
 // - /stream?url=... proxy for m3u8 and media segments (rewrites playlist URIs)
-// - /watch serves public/watch.html (avoid embedding HTML in template literals)
-// - /config returns safe client-side config (tmdb key is optional)
+// - /config returns safe client-side config (no raw TMDB key exposed)
+// - /watch serves public/watch.html (static file, edit client there)
 //
-// Notes for Render:
-// - Add puppeteer to your dependencies if you rely on the extractor.
-// - If Puppeteer causes deploy size issues, remove extractWithPuppeteer or use a lightweight approach.
-// - Ensure the "public" folder exists with watch.html and assets.
+// Notes:
+// - Put your client HTML in public/watch.html
+// - Set TMDB_API_KEY and optionally PROXY_BASE in Render environment variables
+// - Puppeteer is optional: if unavailable, extractWithPuppeteer will simply return null
 
 const express = require("express");
 const axios = require("axios");
 const fetch = require("node-fetch");
 const http = require("http");
 const https = require("https");
-const puppeteer = require("puppeteer");
 const path = require("path");
 const fs = require("fs");
+
+let puppeteer = null;
+try { puppeteer = require("puppeteer"); } catch (e) { /* optional */ }
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const TMDB_API_KEY = process.env.TMDB_API_KEY || ""; // set in Render env if needed
+const TMDB_API_KEY = process.env.TMDB_API_KEY || ""; // optional
 const PROXY_BASE = process.env.PROXY_BASE || `https://vixstreamproxy.onrender.com`;
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const IMAGE_BASE = "https://image.tmdb.org/t/p";
@@ -30,7 +32,7 @@ const IMAGE_BASE = "https://image.tmdb.org/t/p";
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// CORS
+// Basic CORS for endpoints used by client
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -56,18 +58,19 @@ function getProxyUrl(originalUrl) {
   return `${PROXY_BASE}/stream?url=${encodeURIComponent(safe)}`;
 }
 
-// Try to extract playlist tokens from vixsrc page (best-effort)
+// Try to extract playlist from page HTML (simple regex)
 async function vixsrcPlaylist(tmdbId, season, episode) {
-  const url = episode != null
-    ? `https://vixsrc.to/tv/${tmdbId}/${season}/${episode}/?lang=it`
-    : `https://vixsrc.to/movie/${tmdbId}?lang=it`;
   try {
+    const url = episode != null
+      ? `https://vixsrc.to/tv/${tmdbId}/${season}/${episode}/?lang=it`
+      : `https://vixsrc.to/movie/${tmdbId}?lang=it`;
     const resp = await axios.get(url, {
-      headers: { "User-Agent":"Mozilla/5.0", "Referer":"https://vixsrc.to" },
+      headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://vixsrc.to" },
       timeout: 15000
     });
     const txt = resp.data || "";
-    const m = /token': '(.+)',\s*'expires': '(.+)',[\s\S]+?url: '(.+?)',[\s\S]+?window.canPlayFHD = (false|true)/.exec(txt);
+    // Look for token and base url (best-effort)
+    const m = /token':\s*'([^']+)'[\s\S]*?expires':\s*'([^']+)'[\s\S]*?url:\s*'([^']+)'[\s\S]*?window.canPlayFHD\s*=\s*(false|true)/.exec(txt);
     if (!m) return null;
     const [, token, expires, raw, canFHD] = m;
     const playlist = new URL(raw);
@@ -82,50 +85,54 @@ async function vixsrcPlaylist(tmdbId, season, episode) {
   }
 }
 
-// Puppeteer extractor (intercepts requests looking for .m3u8)
+// Puppeteer fallback: intercept requests to find m3u8 (optional)
 async function extractWithPuppeteer(url) {
-  let pl = null;
+  if (!puppeteer) return null;
   let browser = null;
+  let found = null;
   try {
     browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
     const page = await browser.newPage();
     await page.setRequestInterception(true);
     page.on("request", req => {
       const u = req.url();
-      if (!pl && (u.includes(".m3u8") || u.includes("/hls/") || u.includes("playlist"))) {
-        pl = u;
+      if (!found && (u.includes(".m3u8") || u.includes("/hls/") || u.includes("playlist"))) {
+        found = u;
       }
       req.continue().catch(()=>{});
     });
-    await page.goto(url, { timeout: 60000, waitUntil: "networkidle2" });
-    await page.waitForTimeout(2500);
+    await page.goto(url, { timeout: 60000, waitUntil: "networkidle2" }).catch(()=>{});
+    await page.waitForTimeout(2000);
   } catch (e) {
     // ignore
   } finally {
     try { if (browser) await browser.close(); } catch(e){}
   }
-  return pl;
+  return found;
 }
 
-// Parse an m3u8 to extract qualities, audio and subtitles (best-effort)
+// Best-effort parse of a playlist to extract tracks info
 async function parseTracks(m3u8Url) {
   try {
-    const r = await fetch(forceHttps(m3u8Url), { headers: { "User-Agent":"Mozilla/5.0", "Referer":"https://vixsrc.to" }, timeout: 10000 });
-    if (!r.ok) return { qualities: [], audioTracks: [], subtitles: [] };
-    const text = await r.text();
+    const res = await fetch(forceHttps(m3u8Url), {
+      headers: { "Referer": "https://vixsrc.to", "User-Agent": "Mozilla/5.0" },
+      timeout: 10000
+    });
+    if (!res.ok) return { qualities: [], audioTracks: [], subtitles: [] };
+    const text = await res.text();
     const qualities = [], audioTracks = [], subtitles = [];
     text.split(/\r?\n/).forEach(line => {
       if (line.includes("RESOLUTION=")) {
-        const m = /RESOLUTION=\d+x(\d+)/.exec(line);
-        if (m) qualities.push({ height: parseInt(m[1], 10) });
+        const mm = /RESOLUTION=\d+x(\d+)/.exec(line);
+        if (mm) qualities.push({ height: parseInt(mm[1], 10) });
       }
       if (line.includes("TYPE=AUDIO")) {
-        const m = /NAME="([^"]+)"/.exec(line);
-        if (m) audioTracks.push(m[1]);
+        const mm = /NAME="([^"]+)"/.exec(line);
+        if (mm) audioTracks.push(mm[1]);
       }
       if (line.includes("TYPE=SUBTITLES")) {
-        const m = /NAME="([^"]+)"/.exec(line);
-        if (m) subtitles.push(m[1]);
+        const mm = /NAME="([^"]+)"/.exec(line);
+        if (mm) subtitles.push(mm[1]);
       }
     });
     return { qualities, audioTracks, subtitles };
@@ -212,7 +219,7 @@ app.get("/hls/show/:id/:season/:episode", async (req, res) => {
   }
 });
 
-// Resolve wrapper to real stream URL (tries JSON, text and puppeteer)
+// Try to resolve URL to a playable stream (m3u8) using several heuristics
 async function resolveStreamUrl(maybeUrl) {
   try {
     const u = String(maybeUrl);
@@ -221,7 +228,7 @@ async function resolveStreamUrl(maybeUrl) {
     }
 
     try {
-      const r = await fetch(forceHttps(u), { headers: { "User-Agent":"Mozilla/5.0", "Referer":"https://vixsrc.to" }, timeout: 10000 });
+      const r = await fetch(forceHttps(u), { headers: { "User-Agent": "Mozilla/5.0", "Referer":"https://vixsrc.to" }, timeout: 10000 });
       const ct = r.headers.get("content-type") || "";
       if (ct.includes("application/json")) {
         const j = await r.json().catch(()=>null);
@@ -244,7 +251,7 @@ async function resolveStreamUrl(maybeUrl) {
   return null;
 }
 
-// Stream proxy endpoint
+// Stream proxy endpoint - handles playlists and media requests
 app.get("/stream", async (req, res) => {
   const targetRaw = req.query.url;
   if (!targetRaw) return res.status(400).send("Missing url");
@@ -270,9 +277,14 @@ app.get("/stream", async (req, res) => {
       if (!pr.ok) return sendErr(502, "Origin returned non-200 for playlist");
 
       let txt = await pr.text();
-      const urlObj = new URL(target);
-      const base = urlObj.origin + target.substring(0, target.lastIndexOf("/"));
+      // base for relative resolution
+      let base = target;
+      try {
+        const uobj = new URL(target);
+        base = uobj.origin + target.substring(0, target.lastIndexOf("/"));
+      } catch (e) { /* ignore */ }
 
+      // rewrite URIs and absolute segment lines to proxy them through /stream
       txt = txt
         .replace(/URI="([^"]+)"/g, (_, u) => {
           const abs = u.startsWith("http") ? u : u.startsWith("/") ? `https://vixsrc.to${u}` : `${base}/${u}`;
@@ -296,15 +308,16 @@ app.get("/stream", async (req, res) => {
       sendErr(500, "Errore proxy m3u8");
     }
   } else {
+    // proxy media (ts, key, mp4, etc.) with streaming
     try {
       const uObj = new URL(target);
       const client = uObj.protocol === "https:" ? https : http;
       const options = {
         headers: {
-          "Referer":"https://vixsrc.to",
-          "User-Agent":"Mozilla/5.0",
-          "Accept":"*/*",
-          "Connection":"keep-alive"
+          "Referer": "https://vixsrc.to",
+          "User-Agent": "Mozilla/5.0",
+          "Accept": "*/*",
+          "Connection": "keep-alive"
         },
         timeout: 15000
       };
@@ -334,24 +347,24 @@ app.get("/stream", async (req, res) => {
   }
 });
 
-// /config endpoint for client-side use (non-sensitive)
+// Lightweight /config endpoint (no sensitive data)
 app.get("/config", (req, res) => {
   res.json({
     proxyBase: PROXY_BASE,
-    tmdbApiKey: TMDB_API_KEY ? "SET" : "" // avoid exposing full key; client can request server endpoints instead
+    tmdbAvailable: !!TMDB_API_KEY
   });
 });
 
-// Serve watch.html from public to avoid template literal issues
+// Serve watch.html (client) as static file
 app.get("/watch/:type/:id/:season?/:episode?", (req, res) => {
   const watchPath = path.join(__dirname, "public", "watch.html");
   if (!fs.existsSync(watchPath)) {
-    return res.status(500).send("Missing public/watch.html - place your client HTML there");
+    return res.status(500).send("Missing public/watch.html. Put your client HTML in public/watch.html");
   }
   res.sendFile(watchPath);
 });
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🎬 VixStream proxy running on http://0.0.0.0:${PORT}`);
+  console.log(`🎬 VixStream proxy running on http://0.0.0.0:${PORT} (PROXY_BASE=${PROXY_BASE})`);
 });
